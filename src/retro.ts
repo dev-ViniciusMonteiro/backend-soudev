@@ -1,7 +1,10 @@
-// Sprint Review: retrospectiva com a sala inteira, tema de Halloween.
+// Sprint Retro: retrospectiva com a sala inteira, tema de Halloween.
 // Reunião (todos no centro e "pronto") → uma pergunta por vez (cada um levanta a placa com a resposta e baixa
 // quando termina; todos baixaram = próxima) → votação (3 votos por pessoa) → relatório com as mais votadas.
-// Lógica pura: a Sala chama os métodos e manda estado() para todos depois de cada mudança.
+// Quem cai da conexão fica "ausente" (não trava ninguém) e volta de onde parou. Se todos os presentes votarem
+// para encerrar, a retro acaba sem pontos (saída de emergência).
+// Lógica pura e serializável: a Sala guarda o estado no armazenamento a cada mudança (a sala pode hibernar
+// enquanto todos digitam parados, e a memória some).
 
 import { type EstadoRetro, type FaseRetro, PERGUNTAS_RETRO, type RespostaRetro, type StatusRetro, TAMANHO_RESPOSTA, VOTOS_RETRO } from './protocolo';
 import type { ResultadoJogador } from './perfis';
@@ -20,111 +23,192 @@ export function limparResposta(bruto: unknown): string {
     .slice(0, TAMANHO_RESPOSTA);
 }
 
-export class Retro {
-  fase: FaseRetro = 'reuniao';
+/** Tudo o que precisa sobreviver à hibernação. */
+interface Dados {
+  fase: FaseRetro;
   anfitriao: string;
-  readonly participantes: string[];
-  private nomes: Map<string, string>;
-  private prontos = new Set<string>();
-  pergunta = 0;
-  private status = new Map<string, StatusRetro>();
-  private placas = new Map<string, string>(); // levantadas agora
-  private placaAtual = new Map<string, string>(); // id da resposta que a placa levantada representa
-  readonly respostas: RespostaRetro[] = [];
-  private terminaramVoto = new Set<string>();
-  private premiadas: string[] = [];
-  private seq = 0;
-  readonly inicio = Date.now();
+  participantes: string[];
+  nomes: [string, string][];
+  prontos: string[];
+  pergunta: number;
+  status: [string, StatusRetro][];
+  placas: [string, string][];
+  placaAtual: [string, string][];
+  respostas: RespostaRetro[];
+  terminaramVoto: string[];
+  premiadas: string[];
+  ausentes: string[];
+  querSair: string[];
+  cancelada: boolean;
+  seq: number;
+  inicio: number;
+}
 
-  constructor(participantes: { id: string; nome: string }[], anfitriao: string) {
-    this.participantes = participantes.map((p) => p.id);
-    this.nomes = new Map(participantes.map((p) => [p.id, p.nome]));
-    this.anfitriao = anfitriao;
+export class Retro {
+  private d: Dados;
+
+  constructor(participantes: { id: string; nome: string }[], anfitriao: string, dados?: Dados) {
+    this.d = dados ?? {
+      fase: 'reuniao',
+      anfitriao,
+      participantes: participantes.map((p) => p.id),
+      nomes: participantes.map((p) => [p.id, p.nome]),
+      prontos: [],
+      pergunta: 0,
+      status: [],
+      placas: [],
+      placaAtual: [],
+      respostas: [],
+      terminaramVoto: [],
+      premiadas: [],
+      ausentes: [],
+      querSair: [],
+      cancelada: false,
+      seq: 0,
+      inicio: Date.now(),
+    };
   }
 
-  private participa = (id: string): boolean => this.participantes.includes(id);
+  static restaurar(dados: Dados): Retro {
+    return new Retro([], '', dados);
+  }
 
-  /** Todos no centro clicaram "pronto": começa a primeira pergunta. Devolve se mudou algo. */
+  serializar(): Dados {
+    return structuredClone(this.d);
+  }
+
+  get fase(): FaseRetro {
+    return this.d.fase;
+  }
+  get participantes(): string[] {
+    return this.d.participantes;
+  }
+  get cancelada(): boolean {
+    return this.d.cancelada;
+  }
+  get inicio(): number {
+    return this.d.inicio;
+  }
+
+  /* ---------- Ajudantes sobre os pares [chave, valor] ---------- */
+
+  private pegar<T>(l: [string, T][], id: string): T | undefined {
+    return l.find((x) => x[0] === id)?.[1];
+  }
+  private por<T>(l: [string, T][], id: string, v: T): void {
+    const i = l.findIndex((x) => x[0] === id);
+    if (i >= 0) l[i][1] = v;
+    else l.push([id, v]);
+  }
+  private tirar<T>(l: [string, T][], id: string): void {
+    const i = l.findIndex((x) => x[0] === id);
+    if (i >= 0) l.splice(i, 1);
+  }
+
+  private participa = (id: string): boolean => this.d.participantes.includes(id);
+  /** Quem está conectado agora: só essas pessoas seguram o andamento. */
+  presentes = (): string[] => this.d.participantes.filter((p) => !this.d.ausentes.includes(p));
+  private todosPresentes = (cond: (id: string) => boolean): boolean => {
+    const p = this.presentes();
+    return p.length > 0 && p.every(cond);
+  };
+
+  /* ---------- Reunião ---------- */
+
+  /** Todos (presentes) no centro clicaram "pronto": começa a primeira pergunta. */
   pronto(id: string, noCentro: boolean): boolean {
-    if (this.fase !== 'reuniao' || !this.participa(id) || !noCentro || this.prontos.has(id)) return false;
-    this.prontos.add(id);
-    if (this.participantes.every((p) => this.prontos.has(p))) this.irParaPergunta(0);
+    if (this.d.fase !== 'reuniao' || !this.participa(id) || !noCentro || this.d.prontos.includes(id)) return false;
+    this.d.prontos.push(id);
+    this.verificar();
     return true;
   }
 
   private irParaPergunta(n: number): void {
-    this.fase = 'pergunta';
-    this.pergunta = n;
-    this.placas.clear();
-    this.placaAtual.clear();
-    for (const p of this.participantes) this.status.set(p, 'pensando');
+    this.d.fase = 'pergunta';
+    this.d.pergunta = n;
+    this.d.placas = [];
+    this.d.placaAtual = [];
+    this.d.status = this.d.participantes.map((p) => [p, 'pensando']);
+  }
+
+  /* ---------- Perguntas ---------- */
+
+  status(id: string): StatusRetro {
+    return this.pegar(this.d.status, id) ?? 'pensando';
   }
 
   /** Levanta a placa com a resposta (ou troca o texto da placa que já está levantada). */
   levantar(id: string, bruto: unknown): boolean {
-    if (this.fase !== 'pergunta' || !this.participa(id)) return false;
+    if (this.d.fase !== 'pergunta' || !this.participa(id)) return false;
     const texto = limparResposta(bruto);
     if (!texto) return false;
-    const atual = this.placaAtual.get(id);
-    const r = atual && this.respostas.find((x) => x.id === atual);
+    const atual = this.pegar(this.d.placaAtual, id);
+    const r = atual && this.d.respostas.find((x) => x.id === atual);
     if (r) r.texto = texto;
     else {
-      const nova: RespostaRetro = { id: `r${++this.seq}`, pergunta: this.pergunta, autor: id, nome: this.nomes.get(id) ?? '?', texto, votos: [] };
-      this.respostas.push(nova);
-      this.placaAtual.set(id, nova.id);
+      const nova: RespostaRetro = { id: `r${++this.d.seq}`, pergunta: this.d.pergunta, autor: id, nome: this.pegar(this.d.nomes, id) ?? '?', texto, votos: [] };
+      this.d.respostas.push(nova);
+      this.por(this.d.placaAtual, id, nova.id);
     }
-    this.placas.set(id, texto);
-    this.status.set(id, 'levantada');
+    this.por(this.d.placas, id, texto);
+    this.por(this.d.status, id, 'levantada');
     return true;
   }
 
   /** Baixa a placa (a resposta fica guardada). Se todos baixaram, vem a próxima pergunta. */
   baixar(id: string): boolean {
-    if (this.fase !== 'pergunta' || this.status.get(id) !== 'levantada') return false;
-    this.placas.delete(id);
-    this.placaAtual.delete(id);
-    this.status.set(id, 'baixada');
-    this.talvezAvancar();
+    if (this.d.fase !== 'pergunta' || this.status(id) !== 'levantada') return false;
+    this.fecharPlaca(id);
+    this.verificar();
     return true;
   }
 
-  /** Sem resposta para esta pergunta: conta como "baixou". */
+  /** Sem resposta (ou já terminou): conta como "baixou". Também baixa a placa se estiver levantada. */
   passar(id: string): boolean {
-    if (this.fase !== 'pergunta' || !this.participa(id) || this.status.get(id) === 'baixada') return false;
-    this.placas.delete(id);
-    this.placaAtual.delete(id);
-    this.status.set(id, 'baixada');
-    this.talvezAvancar();
+    if (this.d.fase !== 'pergunta' || !this.participa(id) || this.status(id) === 'baixada') return false;
+    this.fecharPlaca(id);
+    this.verificar();
     return true;
   }
 
-  private talvezAvancar(): void {
-    if (this.participantes.every((p) => this.status.get(p) === 'baixada')) this.proxima();
+  private fecharPlaca(id: string): void {
+    this.tirar(this.d.placas, id);
+    this.tirar(this.d.placaAtual, id);
+    this.por(this.d.status, id, 'baixada');
   }
 
   private proxima(): void {
-    if (this.pergunta + 1 < PERGUNTAS_RETRO.length) this.irParaPergunta(this.pergunta + 1);
+    if (this.d.pergunta + 1 < PERGUNTAS_RETRO.length) this.irParaPergunta(this.d.pergunta + 1);
     else {
-      this.fase = 'votacao';
-      this.placas.clear();
-      this.placaAtual.clear();
+      this.d.fase = 'votacao';
+      this.d.placas = [];
+      this.d.placaAtual = [];
     }
+  }
+
+  /** Confere se a fase atual terminou (todos os presentes fizeram a sua parte) e avança. */
+  private verificar(): void {
+    if (this.d.fase === 'reuniao' && this.todosPresentes((p) => this.d.prontos.includes(p))) this.irParaPergunta(0);
+    else if (this.d.fase === 'pergunta' && this.todosPresentes((p) => this.status(p) === 'baixada')) this.proxima();
+    else if (this.d.fase === 'votacao' && this.todosPresentes((p) => this.d.terminaramVoto.includes(p))) this.encerrar();
   }
 
   /** O anfitrião pode puxar o andamento (alguém sumiu do teclado). */
   avancar(id: string): boolean {
-    if (id !== this.anfitriao) return false;
-    if (this.fase === 'reuniao') this.irParaPergunta(0);
-    else if (this.fase === 'pergunta') this.proxima();
-    else if (this.fase === 'votacao') this.encerrar();
+    if (id !== this.d.anfitriao) return false;
+    if (this.d.fase === 'reuniao') this.irParaPergunta(0);
+    else if (this.d.fase === 'pergunta') this.proxima();
+    else if (this.d.fase === 'votacao') this.encerrar();
     else return false;
     return true;
   }
 
+  /* ---------- Votação ---------- */
+
   /** Vota (ou tira o voto) numa resposta: até VOTOS_RETRO por pessoa, não vale votar em si mesmo. */
   votar(id: string, respostaId: string): boolean {
-    if (this.fase !== 'votacao' || !this.participa(id) || this.terminaramVoto.has(id)) return false;
-    const r = this.respostas.find((x) => x.id === respostaId);
+    if (this.d.fase !== 'votacao' || !this.participa(id) || this.d.terminaramVoto.includes(id)) return false;
+    const r = this.d.respostas.find((x) => x.id === respostaId);
     if (!r || r.autor === id) return false;
     const i = r.votos.indexOf(id);
     if (i >= 0) r.votos.splice(i, 1);
@@ -136,70 +220,103 @@ export class Retro {
   }
 
   votosUsados(id: string): number {
-    return this.respostas.filter((r) => r.votos.includes(id)).length;
+    return this.d.respostas.filter((r) => r.votos.includes(id)).length;
   }
 
   terminarVoto(id: string): boolean {
-    if (this.fase !== 'votacao' || !this.participa(id)) return false;
-    this.terminaramVoto.add(id);
-    if (this.participantes.every((p) => this.terminaramVoto.has(p))) this.encerrar();
+    if (this.d.fase !== 'votacao' || !this.participa(id) || this.d.terminaramVoto.includes(id)) return false;
+    this.d.terminaramVoto.push(id);
+    this.verificar();
     return true;
   }
 
   private encerrar(): void {
-    this.fase = 'fim';
-    this.premiadas = [...this.respostas]
+    this.d.fase = 'fim';
+    this.d.placas = [];
+    this.d.premiadas = [...this.d.respostas]
       .filter((r) => r.votos.length > 0)
       .sort((a, b) => b.votos.length - a.votos.length || a.pergunta - b.pergunta || Number(a.id.slice(1)) - Number(b.id.slice(1)))
       .slice(0, XP_PREMIO.length)
       .map((r) => r.id);
   }
 
-  /** Alguém saiu da sala: sai da retro. Devolve true se não sobrou ninguém. */
-  sair(id: string): boolean {
-    const i = this.participantes.indexOf(id);
-    if (i < 0) return false;
-    this.participantes.splice(i, 1);
-    this.prontos.delete(id);
-    this.placas.delete(id);
-    this.status.delete(id);
-    this.terminaramVoto.delete(id);
-    if (!this.participantes.length) return true;
-    if (this.anfitriao === id) this.anfitriao = this.participantes[0];
-    if (this.fase === 'reuniao' && this.participantes.every((p) => this.prontos.has(p))) this.irParaPergunta(0);
-    else if (this.fase === 'pergunta') this.talvezAvancar();
-    else if (this.fase === 'votacao' && this.participantes.every((p) => this.terminaramVoto.has(p))) this.encerrar();
+  /* ---------- Saída de emergência ---------- */
+
+  /** Liga/desliga o voto para encerrar. Todos os presentes votaram: acaba sem pontos, com o relatório do que deu. */
+  votarSair(id: string): boolean {
+    if (this.d.fase === 'fim' || !this.participa(id)) return false;
+    const i = this.d.querSair.indexOf(id);
+    if (i >= 0) this.d.querSair.splice(i, 1);
+    else this.d.querSair.push(id);
+    if (this.todosPresentes((p) => this.d.querSair.includes(p))) {
+      this.d.cancelada = true;
+      this.encerrar();
+    }
+    return true;
+  }
+
+  /* ---------- Conexão ---------- */
+
+  /** Caiu a conexão (ou saiu da sala): vira ausente e não segura mais ninguém. Devolve true se não sobrou ninguém. */
+  ausente(id: string): boolean {
+    if (!this.participa(id) || this.d.ausentes.includes(id)) return this.presentes().length === 0;
+    this.d.ausentes.push(id);
+    this.tirar(this.d.placas, id);
+    this.tirar(this.d.placaAtual, id);
+    const q = this.d.querSair.indexOf(id);
+    if (q >= 0) this.d.querSair.splice(q, 1);
+    const presentes = this.presentes();
+    if (!presentes.length) return true;
+    if (this.d.anfitriao === id) this.d.anfitriao = presentes[0];
+    this.verificar();
     return false;
   }
 
+  /** Voltou (reconectou ou abriu de novo): continua de onde estava. */
+  voltou(id: string): boolean {
+    const i = this.d.ausentes.indexOf(id);
+    if (i < 0) return false;
+    this.d.ausentes.splice(i, 1);
+    // Na pergunta atual, quem volta recomeça "pensando" (a placa caiu junto com a conexão).
+    if (this.d.fase === 'pergunta' && this.status(id) === 'levantada') this.por(this.d.status, id, 'pensando');
+    return true;
+  }
+
+  /* ---------- Estado e resultado ---------- */
+
   estado(): EstadoRetro {
-    const todas = this.fase === 'votacao' || this.fase === 'fim';
+    const d = this.d;
+    const todas = d.fase === 'votacao' || d.fase === 'fim';
     return {
-      fase: this.fase,
-      anfitriao: this.anfitriao,
-      participantes: [...this.participantes],
-      prontos: [...this.prontos],
-      pergunta: this.pergunta,
-      status: Object.fromEntries(this.status),
-      placas: Object.fromEntries(this.placas),
-      respostas: (todas ? this.respostas : this.respostas.filter((r) => r.pergunta === this.pergunta)).map((r) => ({ ...r, votos: [...r.votos] })),
-      terminaramVoto: [...this.terminaramVoto],
-      premiadas: [...this.premiadas],
+      fase: d.fase,
+      anfitriao: d.anfitriao,
+      participantes: [...d.participantes],
+      prontos: [...d.prontos],
+      pergunta: d.pergunta,
+      status: Object.fromEntries(d.participantes.map((p) => [p, this.status(p)])),
+      placas: Object.fromEntries(d.placas),
+      respostas: (todas ? d.respostas : d.respostas.filter((r) => r.pergunta === d.pergunta)).map((r) => ({ ...r, votos: [...r.votos] })),
+      terminaramVoto: [...d.terminaramVoto],
+      premiadas: [...d.premiadas],
+      ausentes: [...d.ausentes],
+      querSair: [...d.querSair],
+      cancelada: d.cancelada,
     };
   }
 
   /** Pontos: todos ganham por participar; quem escreveu as 5 mais votadas ganha prêmio. Posição = votos recebidos. */
   resultado(): ResultadoJogador[] {
-    const xp = new Map(this.participantes.map((p) => [p, XP_PARTICIPAR]));
-    const moedas = new Map(this.participantes.map((p) => [p, MOEDAS_PARTICIPAR]));
-    this.premiadas.forEach((rid, i) => {
-      const r = this.respostas.find((x) => x.id === rid)!;
-      if (!xp.has(r.autor)) return; // autor já saiu da sala
+    const d = this.d;
+    const xp = new Map(d.participantes.map((p) => [p, XP_PARTICIPAR]));
+    const moedas = new Map(d.participantes.map((p) => [p, MOEDAS_PARTICIPAR]));
+    d.premiadas.forEach((rid, i) => {
+      const r = d.respostas.find((x) => x.id === rid)!;
+      if (!xp.has(r.autor)) return;
       xp.set(r.autor, xp.get(r.autor)! + XP_PREMIO[i]);
       moedas.set(r.autor, moedas.get(r.autor)! + MOEDAS_PREMIO[i]);
     });
-    const votos = new Map(this.participantes.map((p) => [p, this.respostas.filter((r) => r.autor === p).reduce((s, r) => s + r.votos.length, 0)]));
-    const ordem = [...this.participantes].sort((a, b) => votos.get(b)! - votos.get(a)!);
+    const votos = new Map(d.participantes.map((p) => [p, d.respostas.filter((r) => r.autor === p).reduce((s, r) => s + r.votos.length, 0)]));
+    const ordem = [...d.participantes].sort((a, b) => votos.get(b)! - votos.get(a)!);
     const res: ResultadoJogador[] = [];
     ordem.forEach((id, i) => {
       const posicao = i > 0 && votos.get(id) === votos.get(ordem[i - 1]) ? res[i - 1].posicao : i + 1;

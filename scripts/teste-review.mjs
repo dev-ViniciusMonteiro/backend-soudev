@@ -1,4 +1,4 @@
-// Teste dos carros e do Sprint Review contra o servidor local (.dev.vars com MODO_TESTE=1).
+// Teste dos carros e do Sprint Retro contra o servidor local (.dev.vars com MODO_TESTE=1).
 
 const BASE = process.env.BASE ?? 'http://localhost:8787';
 const ORIGEM = 'http://localhost:5173';
@@ -92,21 +92,21 @@ async function pessoa(nome, codigo) {
   b.ws.close();
 }
 
-/* ---------- Sprint Review ---------- */
+/* ---------- Sprint Retro ---------- */
 {
   const codigo = (await api('/jogar', { metodo: 'POST' })).d.codigo;
   const a = await pessoa('Review A', codigo);
   const b = await pessoa('Review B', codigo);
   const c = await pessoa('Review C', codigo);
-  await a.ir(-13, 6); // portal do Sprint Review
+  await a.ir(-13, 6); // portal do Sprint Retro
   await esperar(250);
-  await a.mandar({ k: 'iniciar', jogo: 'sprint-review' });
+  await a.mandar({ k: 'iniciar', jogo: 'sprint-retro' });
   const r0 = c.ultimo('retro')?.r;
   ok(r0?.fase === 'reuniao' && r0.participantes.length === 3 && r0.anfitriao === a.id, 'Iniciar no portal: a sala inteira entra na retro (reunião), quem iniciou conduz');
 
   const d = await pessoa('Review D', codigo).catch(() => null);
   await esperar(250);
-  ok(d?.ultimo('erro')?.motivo === 'fechada', 'Durante o Sprint Review a sala fecha para gente nova');
+  ok(d?.ultimo('erro')?.motivo === 'fechada', 'Durante o Sprint Retro a sala fecha para gente nova');
   ok((await api('/jogar', { metodo: 'POST' })).d.codigo !== codigo, 'E sai do "Jogar"');
 
   await a.ir(0, 5);
@@ -176,7 +176,7 @@ async function pessoa(nome, codigo) {
   await c.mandar({ k: 'retro', a: 'terminarVoto' });
   const fim = await a.esperarMsg((m) => m.k === 'retro' && m.r?.fase === 'fim');
   ok(fim?.r.premiadas[0] === rA.id, 'Todos terminaram de votar: relatório final com a mais votada em 1º');
-  const res = await a.esperarMsg((m) => m.k === 'resultado' && m.jogo === 'sprint-review');
+  const res = await a.esperarMsg((m) => m.k === 'resultado' && m.jogo === 'sprint-retro');
   const linhaA = res?.l.find((l) => l.id === a.id);
   ok(linhaA?.posicao === 1 && linhaA.xp === 70 && linhaA.moedas === 110, `Autor da resposta mais votada: 1º lugar, +${linhaA?.xp} XP e +${linhaA?.moedas} moedas`);
   await esperar(300);
@@ -184,6 +184,67 @@ async function pessoa(nome, codigo) {
   for (const p of [a, b, c, d]) p?.ws.close();
 }
 
+/* ---------- Bug relatado: todos "passam" na 3ª pergunta, alguém cai e volta, votação para encerrar ---------- */
+{
+  const codigo = (await api('/salas', { metodo: 'POST' })).d.codigo;
+  const a = await pessoa('Retro A', codigo);
+  let b = await pessoa('Retro B', codigo);
+  const c = await pessoa('Retro C', codigo);
+  await a.ir(-13, 6);
+  await esperar(250);
+  await a.mandar({ k: 'iniciar', jogo: 'sprint-retro' });
+  for (const p of [a, b, c]) {
+    await p.ir(1, 4);
+    await esperar(80);
+    await p.mandar({ k: 'retro', a: 'pronto' });
+  }
+  // Pergunta 1 e 2: todos passam.
+  for (let q = 0; q < 2; q++) for (const p of [a, b, c]) await p.mandar({ k: 'retro', a: 'passar' });
+  let r = a.ultimo('retro').r;
+  ok(r.fase === 'pergunta' && r.pergunta === 2, 'Todos passaram nas 2 primeiras: chegou na 3ª');
+  // 3ª pergunta: A levanta e passa direto (sem baixar), B e C passam.
+  await a.mandar({ k: 'placa', t: 'Feitiço do CI' });
+  await a.mandar({ k: 'retro', a: 'passar' });
+  await b.mandar({ k: 'retro', a: 'passar' });
+  await c.mandar({ k: 'retro', a: 'passar' });
+  r = a.ultimo('retro').r;
+  ok(r.pergunta === 3, 'Na 3ª pergunta, "passar" com a placa levantada também conta e a retro continua (bug corrigido)');
+
+  // B cai no meio da 4ª pergunta: não trava os outros.
+  b.ws.close();
+  await esperar(400);
+  r = a.ultimo('retro').r;
+  ok(r.ausentes.includes(b.id) && r.participantes.includes(b.id), 'Quem cai fica "ausente" (continua participante)');
+  await a.mandar({ k: 'retro', a: 'passar' });
+  await c.mandar({ k: 'retro', a: 'passar' });
+  r = a.ultimo('retro').r;
+  ok(r.fase === 'votacao', 'Ausente não segura a pergunta: os presentes terminaram e foi para a votação');
+
+  // B volta (mesmo perfil) e continua de onde estava, mesmo com a sala fechada.
+  const wsB = new WebSocket(`${WS}/sala/${codigo}?token=${b.token}`, { headers: { Origin: ORIGEM } });
+  const msgsB = [];
+  wsB.onmessage = (e) => msgsB.push(JSON.parse(e.data));
+  await new Promise((res) => (wsB.onopen = res));
+  await esperar(400);
+  const rB = msgsB.filter((m) => m.k === 'retro').at(-1)?.r;
+  ok(rB?.fase === 'votacao' && !rB.ausentes.includes(b.id) && !msgsB.some((m) => m.k === 'erro'), 'Quem caiu volta para a retro (mesmo com a sala fechada) e vê a votação');
+
+  // Saída de emergência: todos os presentes votam para encerrar.
+  await a.mandar({ k: 'retro', a: 'sair' });
+  r = a.ultimo('retro').r;
+  ok(r.querSair.length === 1 && r.fase === 'votacao', 'Um voto para encerrar ainda não encerra');
+  await c.mandar({ k: 'retro', a: 'sair' });
+  wsB.send(JSON.stringify({ k: 'retro', a: 'sair' }));
+  const fimR = await a.esperarMsg((m) => m.k === 'retro' && m.r?.fase === 'fim');
+  ok(fimR?.r.cancelada === true && fimR.r.respostas.some((x) => x.texto === 'Feitiço do CI'), 'Todos votaram: encerra, com o relatório do que foi respondido');
+  await esperar(500);
+  ok(!a.msgs.some((m) => m.k === 'resultado'), 'Encerrada por votação: sem pontos');
+  ok((await api('/salas', { metodo: 'POST' })).status === 200 && !a.ultimo('erro'), 'Sala volta ao normal');
+  for (const p of [a, c]) p.ws.close();
+  wsB.close();
+  void b;
+}
+
 await esperar(300);
-console.log(falhas ? `\n${falhas} falha(s)` : '\nTodos os testes de carros e Sprint Review passaram.');
+console.log(falhas ? `\n${falhas} falha(s)` : '\nTodos os testes de carros e Sprint Retro passaram.');
 process.exit(falhas ? 1 : 0);

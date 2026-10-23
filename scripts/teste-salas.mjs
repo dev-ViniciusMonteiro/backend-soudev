@@ -52,8 +52,9 @@ ok((await api('/perfil', { metodo: 'PATCH', token: pa.token, dados: { skin: 'pel
 ok((await api('/perfil', { metodo: 'PATCH', token: pa.token, dados: { apelido: 'Teste Ana Clara' } })).d?.apelido === 'Teste Ana Clara', 'Trocar apelido');
 
 /* ---------- Salas ---------- */
-const { codigo } = (await api('/jogar', { metodo: 'POST' })).d;
-ok(/^[A-HJ-NP-Z2-9]{6}$/.test(codigo), `POST /jogar devolve código (${codigo})`);
+// No publicado pode haver gente de verdade nas salas públicas: lá o teste usa só sala privada.
+const { codigo } = (await api(LOCAL ? '/jogar' : '/salas', { metodo: 'POST' })).d;
+ok(/^[A-HJ-NP-Z2-9]{6}$/.test(codigo), `${LOCAL ? 'POST /jogar' : 'POST /salas'} devolve código (${codigo})`);
 
 const semToken = new WebSocket(`${WS}/sala/${codigo}?token=${'0'.repeat(64)}`, { headers: { Origin: ORIGEM } });
 ok(await new Promise((r) => ((semToken.onopen = () => r(false)), (semToken.onerror = () => r(true)))), 'Sala sem perfil válido não abre');
@@ -67,12 +68,12 @@ const b = jogador(codigo, pb.token);
 await b.aberto;
 await esperar(300);
 const bvB = b.tipo('bemvindo')[0];
-ok(a.tipo('bemvindo')[0]?.jogadores.length === 1, 'A entra sozinho numa sala pública');
+ok(a.tipo('bemvindo')[0]?.jogadores.length === 1, 'A entra sozinho na sala');
 ok(bvB?.jogadores.some((j) => j.nome === 'Teste Ana Clara' && j.nivel === 1), 'B recebe A com o nome e o nível do perfil');
 ok(a.tipo('entrou')[0]?.j.nome === 'Teste Beto b', 'A fica sabendo que B entrou (nome limpo de < >)');
 ok(bvB?.eu === pb.perfil.id, 'O id na sala é o id público do perfil (o token não vaza)');
 ok(!JSON.stringify(a.recebidas).includes(pb.token), 'Nenhuma mensagem contém o token de ninguém');
-ok((await api('/jogar', { metodo: 'POST' })).d.codigo === codigo, 'Próximo "Jogar" cai na mesma sala (tem vaga)');
+if (LOCAL) ok((await api('/jogar', { metodo: 'POST' })).d.codigo === codigo, 'Próximo "Jogar" cai na mesma sala (tem vaga)');
 
 b.mandar({ k: 'pose', p: [3, 0, 4, 1.5, 1] });
 await esperar(60);
@@ -119,16 +120,18 @@ const treze = jogador(codigo, (await novoPerfil('Treze')).token);
 await treze.aberto;
 await esperar(500);
 ok(treze.tipo('erro')[0]?.motivo === 'cheia', 'A 13ª pessoa recebe "sala cheia"');
-ok((await api('/jogar', { metodo: 'POST' })).d.codigo !== codigo, 'Com a sala cheia, "Jogar" manda para outra sala');
-const online = (await api('/online')).d;
-ok(online.jogadores >= 12, `/online conta as pessoas (${online.jogadores} em ${online.salas} sala(s))`);
+if (LOCAL) {
+  ok((await api('/jogar', { metodo: 'POST' })).d.codigo !== codigo, 'Com a sala cheia, "Jogar" manda para outra sala');
+  const online = (await api('/online')).d;
+  ok(online.jogadores >= 12, `/online conta as pessoas (${online.jogadores} em ${online.salas} sala(s))`);
+}
 
 const privada = (await api('/salas', { metodo: 'POST' })).d.codigo;
 const p = jogador(privada, (await novoPerfil('Priv')).token);
 await p.aberto;
 await esperar(300);
 ok(p.tipo('bemvindo')[0]?.sala.publica === false, 'Criar sala → sala privada');
-ok((await api('/jogar', { metodo: 'POST' })).d.codigo !== privada, 'Sala privada não aparece no "Jogar"');
+if (LOCAL) ok((await api('/jogar', { metodo: 'POST' })).d.codigo !== privada, 'Sala privada não aparece no "Jogar"');
 for (const j of [p, ...extras]) j.ws.close();
 
 /* ---------- XP de presença, partida, conquistas e ranking (só no servidor local de teste) ---------- */

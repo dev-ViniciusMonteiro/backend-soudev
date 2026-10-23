@@ -154,7 +154,7 @@ export interface RespostaRanking {
 
 /* ---------- Jogos da praça (portais) ---------- */
 
-export type IdJogo = 'pega-pega' | 'rei-da-colina' | 'esconde-esconde' | 'sprint-review';
+export type IdJogo = 'pega-pega' | 'rei-da-colina' | 'esconde-esconde' | 'sprint-retro';
 
 export interface InfoJogo {
   nome: string;
@@ -168,7 +168,7 @@ export const JOGOS: Record<IdJogo, InfoJogo> = {
   'pega-pega': { nome: 'Pega-pega', descricao: 'Quem está pegando passa ao encostar em alguém. Ganha quem ficar menos tempo pegando.', min: 2, segundos: 90, portal: [-13, -6] },
   'rei-da-colina': { nome: 'Rei da colina', descricao: 'Fique no círculo em volta do chafariz. Ganha quem somar mais tempo lá dentro.', min: 2, segundos: 90, portal: [13, -6] },
   'esconde-esconde': { nome: 'Esconde-esconde', descricao: 'Um procura com a lanterna, os outros se escondem. Encostou, achou.', min: 2, segundos: 100, portal: [0, 15] },
-  'sprint-review': { nome: 'Sprint Review', descricao: 'Retrospectiva de Halloween com a sala inteira: perguntas, placas na mão, votação e relatório.', min: 1, segundos: 0, portal: [-13, 6] },
+  'sprint-retro': { nome: 'Sprint Retro', descricao: 'Retrospectiva de Halloween com a sala inteira: perguntas, placas na mão, votação e relatório.', min: 1, segundos: 0, portal: [-13, 6] },
 };
 
 /** Ficar dentro deste raio do portal = estar na fila do jogo. */
@@ -211,9 +211,9 @@ export type MsgClienteJogo =
   | { k: 'iniciar'; jogo: IdJogo }
   | { k: 'carro'; c: number } // entrar no carro
   | { k: 'sairCarro' }
-  | { k: 'placa'; t: string } // sprint review: levantar (ou trocar) a placa com a resposta
+  | { k: 'placa'; t: string } // sprint retro: levantar (ou trocar) a placa com a resposta
   | { k: 'retro'; a: AcaoRetro }
-  | { k: 'voto'; r: string }; // sprint review: votar (ou tirar o voto) numa resposta
+  | { k: 'voto'; r: string }; // sprint retro: votar (ou tirar o voto) numa resposta
 export type MsgServidorJogo =
   | { k: 'filas'; f: Partial<Record<IdJogo, string[]>> }
   | { k: 'partida'; p: EstadoPartida | null }
@@ -236,7 +236,7 @@ export const ALCANCE_CARRO = 4.5;
 /** [id do carro, x, z, rotação, id de quem dirige ou ''] */
 export type EstadoCarro = [number, number, number, number, string];
 
-/* ---------- Sprint Review (retrospectiva de Halloween) ---------- */
+/* ---------- Sprint Retro (retrospectiva de Halloween) ---------- */
 
 export const PERGUNTAS_RETRO = [
   { emoji: '🍬', titulo: 'Doçuras', pergunta: 'O que foi bom nesta sprint?' },
@@ -248,7 +248,8 @@ export const VOTOS_RETRO = 3; // votos de cada pessoa na votação
 export const TAMANHO_RESPOSTA = 60; // "em poucas palavras"
 export const RAIO_CENTRO_RETRO = 8; // para ficar "pronto", tem que estar perto do chafariz
 
-export type AcaoRetro = 'pronto' | 'baixar' | 'passar' | 'avancar' | 'terminarVoto';
+/** "sair" liga/desliga o voto para encerrar a retro (todos os presentes = acaba sem pontos). */
+export type AcaoRetro = 'pronto' | 'baixar' | 'passar' | 'avancar' | 'terminarVoto' | 'sair';
 export type FaseRetro = 'reuniao' | 'pergunta' | 'votacao' | 'fim';
 export type StatusRetro = 'pensando' | 'levantada' | 'baixada';
 
@@ -272,4 +273,7 @@ export interface EstadoRetro {
   respostas: RespostaRetro[]; // todas na votação e no fim; antes, só as da pergunta atual
   terminaramVoto: string[];
   premiadas: string[]; // no fim: ids das 5 respostas mais votadas, em ordem
+  ausentes: string[]; // caíram da conexão: não seguram o andamento e voltam de onde pararam
+  querSair: string[]; // votaram para encerrar
+  cancelada: boolean; // encerrada por votação (sem pontos)
 }

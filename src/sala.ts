@@ -73,6 +73,9 @@ export class Sala extends DurableObject<Env> {
     }
     ctx.blockConcurrencyWhile(async () => {
       this.config = (await ctx.storage.get<Config>('config')) ?? null;
+      // A retro fica guardada: a sala hiberna se todos ficam parados digitando, e a memória some.
+      const retro = await ctx.storage.get<Parameters<typeof Retro.restaurar>[0]>('retro');
+      if (retro) this.retro = Retro.restaurar(retro);
     });
   }
 
@@ -100,7 +103,7 @@ export class Sala extends DurableObject<Env> {
 
     const id = req.headers.get('X-Jogador-Id') ?? '';
     if (!id) return recusar('invalida');
-    // Partida ou Sprint Review rolando: a sala fica fechada para gente nova (quem caiu e participa pode voltar).
+    // Partida ou Sprint Retro rolando: a sala fica fechada para gente nova (quem caiu e participa pode voltar).
     if (this.partida && !this.partida.participantes.includes(id)) return recusar('fechada');
     if (this.retro && !this.retro.participantes.includes(id)) return recusar('fechada');
 
@@ -133,7 +136,9 @@ export class Sala extends DurableObject<Env> {
     const sala: InfoSala = { codigo: this.config!.codigo, publica: this.config!.publica, max: MAX_JOGADORES };
     servidor.send(JSON.stringify({ k: 'bemvindo', eu: id, sala, jogadores: [...this.jogadores.values()].map(publico) } satisfies MsgServidor));
     if (this.partida) servidor.send(JSON.stringify({ k: 'partida', p: this.partida.estado(Date.now()) } satisfies MsgServidor));
-    if (this.retro) servidor.send(JSON.stringify({ k: 'retro', r: this.retro.estado() } satisfies MsgServidor));
+    // Voltou para a retro (reconectou ou abriu de novo): continua de onde estava.
+    if (this.retro?.voltou(id)) this.retroMudou();
+    else if (this.retro) servidor.send(JSON.stringify({ k: 'retro', r: this.retro.estado() } satisfies MsgServidor));
     servidor.send(JSON.stringify({ k: 'carros', l: this.estadoCarros() } satisfies MsgServidor));
     this.paraTodos({ k: 'entrou', j: publico(j) }, servidor);
     this.avisarDiretorio();
@@ -193,6 +198,7 @@ export class Sala extends DurableObject<Env> {
       else if (m.a === 'passar') mudou = r.passar(j.id);
       else if (m.a === 'avancar') mudou = r.avancar(j.id);
       else if (m.a === 'terminarVoto') mudou = r.terminarVoto(j.id);
+      else if (m.a === 'sair') mudou = r.votarSair(j.id);
       if (mudou) this.retroMudou();
     }
   }
@@ -225,13 +231,27 @@ export class Sala extends DurableObject<Env> {
     this.paraTodos({ k: 'carros', l: this.estadoCarros() });
   }
 
-  /* ---------- Sprint Review ---------- */
+  /* ---------- Sprint Retro ---------- */
 
   private retroMudou(): void {
     const r = this.retro;
     if (!r) return;
+    // Guarda antes de avisar (se a sala hibernar, volta igual).
+    this.ctx.waitUntil(r.fase === 'fim' ? this.ctx.storage.delete('retro') : this.ctx.storage.put('retro', r.serializar()));
     this.paraTodos({ k: 'retro', r: r.estado() });
     if (r.fase === 'fim') void this.terminarRetro();
+  }
+
+  /** Alarme: retro sem ninguém conectado há 1 minuto é cancelada (senão a sala ficaria fechada para sempre). */
+  async alarm(): Promise<void> {
+    if (this.retro && this.retro.presentes().length === 0) this.cancelarRetro();
+  }
+
+  private cancelarRetro(): void {
+    this.retro = null;
+    this.ctx.waitUntil(this.ctx.storage.delete('retro'));
+    this.paraTodos({ k: 'retro', r: null });
+    this.avisarDiretorio();
   }
 
   private async terminarRetro(): Promise<void> {
@@ -240,16 +260,17 @@ export class Sala extends DurableObject<Env> {
     this.retro = null;
     this.avisarDiretorio(); // reabre a sala
     this.atualizarFilas();
-    // O relatório final (fase "fim") já foi enviado; aqui só ficam os pontos.
+    // O relatório final (fase "fim") já foi enviado; aqui só ficam os pontos (encerrada por votação: sem pontos).
+    if (r.cancelada) return;
     const res = r.resultado();
     const nomes = new Map([...this.jogadores.values()].map((j) => [j.id, j.nome]));
     let conquistas: Record<string, string[]> = {};
     try {
-      conquistas = await registrarPartida(this.env.DB, { jogo: 'sprint-review', sala: this.config?.codigo ?? '', inicio: r.inicio, fim: Date.now(), resultados: res });
+      conquistas = await registrarPartida(this.env.DB, { jogo: 'sprint-retro', sala: this.config?.codigo ?? '', inicio: r.inicio, fim: Date.now(), resultados: res });
     } catch (e) {
       console.error('registrar sprint review', e);
     }
-    this.paraTodos({ k: 'resultado', jogo: 'sprint-review', l: res.map((x) => ({ ...x, nome: nomes.get(x.id) ?? '?' })), conquistas });
+    this.paraTodos({ k: 'resultado', jogo: 'sprint-retro', l: res.map((x) => ({ ...x, nome: nomes.get(x.id) ?? '?' })), conquistas });
   }
 
   /* ---------- Jogos ---------- */
@@ -279,8 +300,8 @@ export class Sala extends DurableObject<Env> {
     if (this.partida || this.retro || !JOGOS[jogo]) return;
     const fila = this.calcularFilas()[jogo] ?? [];
     if (!fila.includes(quem) || fila.length < JOGOS[jogo].min) return;
-    // Sprint Review: participa a sala inteira (não só quem está no portal).
-    if (jogo === 'sprint-review') {
+    // Sprint Retro: participa a sala inteira (não só quem está no portal).
+    if (jogo === 'sprint-retro') {
       this.retro = new Retro(
         [...this.jogadores.values()].map((j) => ({ id: j.id, nome: j.nome })),
         quem,
@@ -369,12 +390,11 @@ export class Sala extends DurableObject<Env> {
     // Saiu no meio da partida: sai dela também; sem gente suficiente (ou sem quem procura), acaba.
     if (this.partida?.sair(j.id)) void this.terminar(this.partida.participantes.length < 2);
     else this.atualizarFilas();
+    // Caiu da retro: fica ausente (não trava os outros). Se não sobrou ninguém conectado, espera 1 minuto
+    // (pode ser só alguém recarregando a página) e, se ninguém voltar, a retro acaba e a sala reabre.
     if (this.retro) {
-      if (this.retro.sair(j.id)) {
-        this.retro = null;
-        this.paraTodos({ k: 'retro', r: null });
-        this.avisarDiretorio();
-      } else this.retroMudou();
+      if (this.retro.ausente(j.id)) this.ctx.waitUntil(this.ctx.storage.setAlarm(Date.now() + 60_000));
+      this.retroMudou();
     }
     // XP de presença: 1 por minuto na praça (o limite diário fica no banco).
     const minutos = (Date.now() - j.desde) / Number(this.env.PRESENCA_MS || 60000);
