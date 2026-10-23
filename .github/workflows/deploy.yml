@@ -1,0 +1,33 @@
+name: Deploy
+
+# Cada push na main confere os tipos, testa contra um servidor local e publica na Cloudflare.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Testar as salas
+        run: |
+          npx wrangler dev --port 8787 > wrangler-dev.log 2>&1 &
+          for i in $(seq 1 60); do curl -s localhost:8787/saude && break; sleep 1; done
+          npm run teste
+      # Só publica depois que os segredos CLOUDFLARE_API_TOKEN e CLOUDFLARE_ACCOUNT_ID forem cadastrados no repositório.
+      - name: Publicar
+        if: env.TEM_TOKEN == 'true'
+        env:
+          TEM_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
