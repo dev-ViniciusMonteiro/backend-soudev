@@ -7,8 +7,9 @@ import { DurableObject } from 'cloudflare:workers';
 import { Partida } from './jogos';
 import { MataMata, type PosMM } from './matamata';
 import { Corrida } from './corrida';
-import { darXpPresenca, registrarPartida, skinPermitida } from './perfis';
-import { ALCANCE_CARRO, Anim, CARROS, DOMO, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, SKIN_VALIDA, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
+import { Truco, VinteUm } from './cartas';
+import { darXpPresenca, moverMoedas, registrarPartida, skinPermitida } from './perfis';
+import { ALCANCE_CARRO, ALCANCE_MESA, Anim, CARROS, DOMO, MESAS, type TipoMesa, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, SKIN_VALIDA, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
 import { Retro } from './retro';
 
 interface Carro {
@@ -68,6 +69,10 @@ export class Sala extends DurableObject<Env> {
   private corrida: Corrida | null = null;
   private relogioCorrida: ReturnType<typeof setInterval> | null = null;
   private ultimoEstadoCorrida = 0;
+  private bj: VinteUm | null = null;
+  private truco: Truco | null = null;
+  private trucoPago = false;
+  private relogioMesas: ReturnType<typeof setTimeout> | null = null;
   private carros: Carro[] = CARROS.map((c) => ({ x: c.x, z: c.z, rot: c.rot, motorista: null, passageiros: [] }));
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -154,6 +159,12 @@ export class Sala extends DurableObject<Env> {
     servidor.send(JSON.stringify({ k: 'carros', l: this.estadoCarros() } satisfies MsgServidor));
     if (this.mm) servidor.send(JSON.stringify({ k: 'mm', e: this.mm.estado(Date.now()) } satisfies MsgServidor));
     if (this.corrida) servidor.send(JSON.stringify({ k: 'corrida', e: this.corrida.estado(Date.now()) } satisfies MsgServidor));
+    if (this.bj) servidor.send(JSON.stringify({ k: 'bj', e: this.bj.estado(Date.now()) } satisfies MsgServidor));
+    if (this.truco) {
+      servidor.send(JSON.stringify({ k: 'truco', e: this.truco.estado(Date.now()) } satisfies MsgServidor));
+      const mao = this.truco.maoDe(id);
+      if (mao.length) servidor.send(JSON.stringify({ k: 'trucoMao', cartas: mao } satisfies MsgServidor));
+    }
     this.paraTodos({ k: 'entrou', j: publico(j) }, servidor);
     this.avisarDiretorio();
     return new Response(null, { status: 101, webSocket: cliente });
@@ -203,6 +214,8 @@ export class Sala extends DurableObject<Env> {
       this.paraTodos({ k: 'skin', id: j.id, s }, ws);
     } else if (this.mm?.jogadores.has(j.id) && (m.k === 'comprar' || m.k === 'empunhar' || m.k === 'recarregar' || m.k === 'tiro')) {
       this.acaoMM(j, m);
+    } else if (m.k === 'mesa' || m.k === 'bj' || m.k === 'truco') {
+      await this.acaoMesa(ws, j, m);
     } else if (m.k === 'iniciar') {
       this.iniciar(j.id, m.jogo);
     } else if (m.k === 'carro') {
@@ -223,6 +236,108 @@ export class Sala extends DurableObject<Env> {
       else if (m.a === 'sair') mudou = r.votarSair(j.id);
       if (mudou) this.retroMudou();
     }
+  }
+
+  /* ---------- Mesas de cartas ---------- */
+
+  /** Mexe nas moedas do perfil; false se não tem saldo (ou o banco falhou). */
+  private moedas = async (id: string, valor: number, motivo: string): Promise<boolean> => {
+    try {
+      await moverMoedas(this.env.DB, id, valor, motivo);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  private erroMesa(ws: WebSocket, mesa: TipoMesa, texto: string | null | false): void {
+    if (texto) ws.send(JSON.stringify({ k: 'mesaErro', mesa, texto } satisfies MsgServidor));
+  }
+
+  private async acaoMesa(ws: WebSocket, j: Anexo, m: MsgCliente): Promise<void> {
+    const agora = Date.now();
+    if (m.k === 'mesa') {
+      const tipo = m.mesa === 'truco' ? 'truco' : '21';
+      if (m.a === 'sentar') {
+        const [mx, mz] = MESAS[tipo];
+        if (Math.hypot(j.pose[0] - mx, j.pose[2] - mz) > ALCANCE_MESA) return this.erroMesa(ws, tipo, 'Chegue perto da mesa para sentar.');
+        if (tipo === '21') {
+          this.bj ??= new VinteUm(agora);
+          if (!this.bj.sentar(j.id)) return this.erroMesa(ws, tipo, 'A mesa está cheia.');
+        } else {
+          this.truco ??= new Truco();
+          if (!this.truco.sentar(j.id)) return this.erroMesa(ws, tipo, 'A mesa está cheia ou a partida já começou.');
+          this.trucoPago = false;
+        }
+      } else if (m.a === 'levantar') this.levantarDasMesas(j.id, tipo);
+      else if (m.a === 'comecar' && tipo === 'truco' && this.truco) {
+        const erro = await this.truco.comecar(j.id, m.aposta, this.moedas);
+        this.trucoPago = false;
+        this.erroMesa(ws, tipo, erro);
+      }
+    } else if (m.k === 'bj' && this.bj) {
+      const erro = m.a === 'apostar' ? await this.bj.apostar(j.id, m.v, this.moedas) : await this.bj.acao(j.id, m.a, this.moedas);
+      this.erroMesa(ws, '21', erro);
+    } else if (m.k === 'truco' && this.truco) {
+      let erro: string | null = null;
+      if (m.a === 'jogar') erro = this.truco.jogar(j.id, m.i, m.encoberta, agora);
+      else if (m.a === 'trucar') erro = this.truco.trucar(j.id, agora);
+      else erro = this.truco.responder(j.id, m.a === 'aceitar', agora);
+      this.erroMesa(ws, 'truco', erro);
+    }
+    this.enviarMesas();
+    this.armarRelogioMesas();
+  }
+
+  private levantarDasMesas(id: string, so?: TipoMesa): void {
+    if ((!so || so === '21') && this.bj) this.bj.levantar(id);
+    if ((!so || so === 'truco') && this.truco && this.truco.levantar(id) === 'abandonou') void this.pagarTruco();
+    this.enviarMesas();
+  }
+
+  private async pagarTruco(): Promise<void> {
+    if (!this.truco || this.trucoPago) return;
+    this.trucoPago = true;
+    await this.truco.pagar(this.moedas);
+  }
+
+  /** Estado das mesas para todos; as cartas do truco, só para o dono de cada mão. */
+  private enviarMesas(): void {
+    const agora = Date.now();
+    if (this.bj?.vazia) this.bj = null;
+    if (this.truco?.vazia) this.truco = null;
+    this.paraTodos({ k: 'bj', e: this.bj?.estado(agora) ?? null });
+    this.paraTodos({ k: 'truco', e: this.truco?.estado(agora) ?? null });
+    if (this.truco)
+      for (const [ws, j] of this.jogadores) {
+        if (!this.truco.lugares.includes(j.id)) continue;
+        try {
+          ws.send(JSON.stringify({ k: 'trucoMao', cartas: this.truco.maoDe(j.id) } satisfies MsgServidor));
+        } catch {
+          /* caindo */
+        }
+      }
+  }
+
+  /** Relógio das mesas: um setTimeout novo a cada volta (cada um segura a sala em memória por até 15 min). */
+  private armarRelogioMesas(): void {
+    if (this.relogioMesas || (!this.bj && !this.truco)) return;
+    this.relogioMesas = setTimeout(async () => {
+      this.relogioMesas = null;
+      const agora = Date.now();
+      let mudou = false;
+      if (this.bj) mudou = (await this.bj.tick(agora, this.moedas)) || mudou;
+      if (this.truco) {
+        mudou = this.truco.tick(agora) || mudou;
+        if (this.truco.fase === 'fim' && !this.trucoPago) {
+          await this.pagarTruco();
+          mudou = true;
+        }
+      }
+      // Relógio da vez e da aposta: manda o estado de tempos em tempos mesmo sem mudança.
+      if (mudou || Math.floor(agora / 1000) % 2 === 0) this.enviarMesas();
+      this.armarRelogioMesas();
+    }, 500);
   }
 
   /* ---------- Corrida ---------- */
@@ -550,6 +665,8 @@ export class Sala extends DurableObject<Env> {
     this.mexeram.delete(ws);
     this.paraTodos({ k: 'saiu', id: j.id });
     this.avisarDiretorio();
+    // Saiu da sala: levanta das mesas de cartas.
+    if (this.bj || this.truco) this.levantarDasMesas(j.id);
     // Saiu no meio da corrida: sai da classificação; se não sobrou ninguém, acaba sem resultado.
     if (this.corrida?.sair(j.id)) void this.terminarCorrida(false);
     // Saiu no meio do mata-mata: se um time ficou vazio, o outro vence.

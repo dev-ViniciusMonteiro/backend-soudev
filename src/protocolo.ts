@@ -250,7 +250,8 @@ export type MsgClienteJogo =
   | { k: 'placa'; t: string } // sprint retro: levantar (ou trocar) a placa com a resposta
   | { k: 'retro'; a: AcaoRetro }
   | { k: 'voto'; r: string } // sprint retro: votar (ou tirar o voto) numa resposta
-  | MsgClienteMM;
+  | MsgClienteMM
+  | MsgClienteCartas;
 export type MsgServidorJogo =
   | { k: 'filas'; f: Partial<Record<IdJogo, string[]>> }
   | { k: 'partida'; p: EstadoPartida | null }
@@ -259,7 +260,8 @@ export type MsgServidorJogo =
   | { k: 'carros'; l: EstadoCarro[] }
   | { k: 'retro'; r: EstadoRetro | null }
   | MsgServidorMM
-  | { k: 'corrida'; e: EstadoCorrida | null };
+  | { k: 'corrida'; e: EstadoCorrida | null }
+  | MsgServidorCartas;
 
 /* ---------- Carros ---------- */
 
@@ -563,3 +565,71 @@ export interface EstadoCorrida {
   corredores: Record<string, CorredorEstado>;
   totalCheckpoints: number;
 }
+
+/* ---------- Mesas de cartas: 21 (contra a casa) e truco paulista ---------- */
+
+export type TipoMesa = '21' | 'truco';
+/** Onde ficam as mesas na praça (x, z). Chegou perto, pode sentar. */
+export const MESAS: Record<TipoMesa, [number, number]> = { '21': [-19, 0], truco: [19, 1.5] };
+export const LUGARES_MESA: Record<TipoMesa, number> = { '21': 5, truco: 4 };
+export const ALCANCE_MESA = 4;
+
+/** Carta em texto: valor + naipe, ex. "A♠", "7♥", "10♦". */
+export type Carta = string;
+
+/* 21 */
+export const APOSTA_MIN_21 = 10;
+export const APOSTA_MAX_21 = 500;
+export const SEGUNDOS_APOSTA_21 = 15;
+export const SEGUNDOS_VEZ = 25;
+
+export interface MaoBJ {
+  cartas: Carta[];
+  aposta: number;
+  status: 'apostando' | 'jogando' | 'parou' | 'estourou' | 'blackjack' | 'fora';
+  ganho?: number; // no fim da rodada: quanto voltou (aposta incluída)
+}
+
+export interface EstadoBJ {
+  fase: 'apostas' | 'jogando' | 'casa' | 'resultado';
+  lugares: (string | null)[];
+  maos: Record<string, MaoBJ>;
+  casa: Carta[]; // a segunda carta da casa vem como "?" até ela jogar
+  vez: string | null;
+  restanteMs: number;
+}
+
+/* Truco paulista */
+export const APOSTAS_TRUCO = [50, 100, 200] as const;
+export const PONTOS_TRUCO = 12;
+
+export interface EstadoTruco {
+  fase: 'esperando' | 'jogando' | 'fim';
+  lugares: (string | null)[];
+  aposta: number; // por pessoa, vai para o pote
+  placar: [number, number]; // time 0 = lugares 0 e 2; time 1 = lugares 1 e 3
+  vira: Carta | null;
+  valorMao: number; // 1, 3, 6, 9, 12
+  pedido: { de: number; valor: number } | null; // truco pedido pelo time "de", esperando resposta
+  mesa: { lugar: number; carta: Carta | null }[]; // cartas da vaz atual (null = encoberta)
+  vazas: (number | null)[]; // quem ganhou cada vaz da mão (time; null = empate)
+  vez: number | null; // lugar que joga
+  cartasNaMao: number[]; // quantas cartas cada lugar ainda tem
+  vencedor: number | null; // time
+  ultimaVaz: { lugar: number; carta: Carta | null }[] | null; // para mostrar a vaz que acabou
+  restanteMs: number;
+}
+
+export type MsgClienteCartas =
+  | { k: 'mesa'; mesa: TipoMesa; a: 'sentar' | 'levantar' | 'comecar'; aposta?: number }
+  | { k: 'bj'; a: 'apostar'; v: number }
+  | { k: 'bj'; a: 'pedir' | 'parar' | 'dobrar' }
+  | { k: 'truco'; a: 'jogar'; i: number; encoberta?: boolean }
+  | { k: 'truco'; a: 'trucar' | 'aceitar' | 'correr' };
+
+export type MsgServidorCartas =
+  | { k: 'bj'; e: EstadoBJ | null }
+  | { k: 'truco'; e: EstadoTruco | null }
+  /** Só para você: as suas cartas do truco. */
+  | { k: 'trucoMao'; cartas: Carta[] }
+  | { k: 'mesaErro'; mesa: TipoMesa; texto: string };

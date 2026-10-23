@@ -6,7 +6,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "wrangler types --strict-vars=false && tsc --noEmit",
-    "teste": "node scripts/teste-salas.mjs && node scripts/teste-jogos.mjs && node scripts/teste-review.mjs && node scripts/teste-mm.mjs && node scripts/teste-corrida.mjs",
+    "teste": "node scripts/teste-salas.mjs && node scripts/teste-jogos.mjs && node scripts/teste-review.mjs && node scripts/teste-mm.mjs && node scripts/teste-corrida.mjs && node scripts/teste-cartas.mjs",
     "protocolo": "node scripts/copiar-protocolo.mjs",
     "limpar-teste": "wrangler d1 execute soudev-jogos --remote --command \"DELETE FROM extrato WHERE jogador_id IN (SELECT id FROM jogadores WHERE apelido LIKE 'Teste %'); DELETE FROM itens WHERE jogador_id IN (SELECT id FROM jogadores WHERE apelido LIKE 'Teste %'); DELETE FROM conquistas WHERE jogador_id IN (SELECT id FROM jogadores WHERE apelido LIKE 'Teste %'); DELETE FROM jogadores WHERE apelido LIKE 'Teste %'\""
   },
