@@ -66,8 +66,9 @@ const codigo = (await api('/salas', { metodo: 'POST' })).d.codigo;
   ok(a.ultimo('bj')?.e?.lugares.includes(a.id), '21: perto da mesa, senta');
   await a.mandar({ k: 'bj', a: 'apostar', v: 5 });
   ok(a.ultimo('mesaErro')?.texto.includes('entre'), '21: aposta fora do limite (10 a 500) é recusada');
-  await a.mandar({ k: 'bj', a: 'apostar', v: 100 }, 600);
-  let e = a.ultimo('bj').e;
+  await a.mandar({ k: 'bj', a: 'apostar', v: 100 });
+  // Espera as cartas (no servidor publicado o relógio da mesa + o banco levam ~0,6 s).
+  let e = (await a.esperarMsg((m) => m.k === 'bj' && m.e?.fase !== 'apostas', 5000))?.e ?? a.ultimo('bj').e;
   ok((await a.moedas()) === 900 && ['jogando', 'casa', 'resultado'].includes(e.fase), '21: apostou 100 (saldo 900) e as cartas foram dadas');
   ok(e.casa.length === 2 && (e.fase !== 'jogando' || e.casa[1] === '?'), '21: segunda carta da casa escondida enquanto você joga');
   // Joga: pede até 17 ou mais e para.
