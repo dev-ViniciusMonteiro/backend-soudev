@@ -81,7 +81,7 @@ await esperar(400);
 const lotes = a.tipo('poses');
 const ultima = lotes.flatMap((l) => l.l).filter((p) => p[0] === bvB.eu).pop();
 ok(lotes.length >= 1 && lotes.length <= 2, `Poses chegam em lote (${lotes.length} lote(s) para 2 envios)`);
-ok(ultima && ultima[1] === 40 && ultima[3] === -40, 'Posição fora da praça é limitada ao mundo (±40)');
+ok(ultima && ultima[1] === 80 && ultima[3] === -80, 'Posição fora do mundo é limitada (±80)');
 b.mandar({ k: 'pose', p: [1, 0, 'x', 0, 0] });
 await esperar(300);
 ok(a.tipo('poses').length === lotes.length, 'Pose inválida é ignorada');

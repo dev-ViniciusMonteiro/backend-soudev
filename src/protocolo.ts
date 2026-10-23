@@ -3,14 +3,14 @@
 
 export const MAX_JOGADORES = 12;
 
-/** Tamanho da praça: ninguém sai deste quadrado (metros, centro em 0,0). */
-export const LIMITE_MUNDO = 40;
+/** Tamanho do mundo: ninguém sai deste quadrado (metros, centro em 0,0). A praça fica no meio, cercada de ruas e quarteirões. */
+export const LIMITE_MUNDO = 80;
 
 /** Quantas vezes por segundo o jogo manda a posição (só quando se mexe) e o servidor repassa o lote. */
 export const ENVIOS_POR_SEGUNDO = 10;
 
 /** Estado da animação do boneco: o servidor só repassa, quem anima é cada aparelho. */
-export const Anim = { Parado: 0, Andando: 1, Correndo: 2, NoAr: 3 } as const;
+export const Anim = { Parado: 0, Andando: 1, Correndo: 2, NoAr: 3, Dirigindo: 4 } as const;
 export type Anim = (typeof Anim)[keyof typeof Anim];
 
 export const EMOTES = ['acenar', 'dancar', 'comemorar', 'joinha'] as const;
@@ -154,7 +154,7 @@ export interface RespostaRanking {
 
 /* ---------- Jogos da praça (portais) ---------- */
 
-export type IdJogo = 'pega-pega' | 'rei-da-colina' | 'esconde-esconde';
+export type IdJogo = 'pega-pega' | 'rei-da-colina' | 'esconde-esconde' | 'sprint-review';
 
 export interface InfoJogo {
   nome: string;
@@ -168,6 +168,7 @@ export const JOGOS: Record<IdJogo, InfoJogo> = {
   'pega-pega': { nome: 'Pega-pega', descricao: 'Quem está pegando passa ao encostar em alguém. Ganha quem ficar menos tempo pegando.', min: 2, segundos: 90, portal: [-13, -6] },
   'rei-da-colina': { nome: 'Rei da colina', descricao: 'Fique no círculo em volta do chafariz. Ganha quem somar mais tempo lá dentro.', min: 2, segundos: 90, portal: [13, -6] },
   'esconde-esconde': { nome: 'Esconde-esconde', descricao: 'Um procura com a lanterna, os outros se escondem. Encostou, achou.', min: 2, segundos: 100, portal: [0, 15] },
+  'sprint-review': { nome: 'Sprint Review', descricao: 'Retrospectiva de Halloween com a sala inteira: perguntas, placas na mão, votação e relatório.', min: 1, segundos: 0, portal: [-13, 6] },
 };
 
 /** Ficar dentro deste raio do portal = estar na fila do jogo. */
@@ -206,9 +207,69 @@ export interface LinhaResultado {
 }
 
 /* Mensagens a mais dos jogos (somam com MsgCliente/MsgServidor). */
-export type MsgClienteJogo = { k: 'iniciar'; jogo: IdJogo };
+export type MsgClienteJogo =
+  | { k: 'iniciar'; jogo: IdJogo }
+  | { k: 'carro'; c: number } // entrar no carro
+  | { k: 'sairCarro' }
+  | { k: 'placa'; t: string } // sprint review: levantar (ou trocar) a placa com a resposta
+  | { k: 'retro'; a: AcaoRetro }
+  | { k: 'voto'; r: string }; // sprint review: votar (ou tirar o voto) numa resposta
 export type MsgServidorJogo =
   | { k: 'filas'; f: Partial<Record<IdJogo, string[]>> }
   | { k: 'partida'; p: EstadoPartida | null }
   | { k: 'pegou'; de: string; para: string } // pega-pega: passou / esconde-esconde: achou
-  | { k: 'resultado'; jogo: IdJogo; l: LinhaResultado[]; conquistas: Record<string, string[]> };
+  | { k: 'resultado'; jogo: IdJogo; l: LinhaResultado[]; conquistas: Record<string, string[]> }
+  | { k: 'carros'; l: EstadoCarro[] }
+  | { k: 'retro'; r: EstadoRetro | null };
+
+/* ---------- Carros ---------- */
+
+/** Os 4 carros que dá para dirigir: modelo e onde ficam estacionados no começo (x, z, rotação). */
+export const CARROS: { modelo: string; x: number; z: number; rot: number }[] = [
+  { modelo: 'car_taxi', x: -14, z: -30.5, rot: Math.PI / 2 },
+  { modelo: 'car_sedan', x: 14, z: 30.5, rot: -Math.PI / 2 },
+  { modelo: 'car_hatchback', x: 30.5, z: -14, rot: 0 },
+  { modelo: 'car_police', x: -30.5, z: 14, rot: Math.PI },
+];
+/** Distância máxima até o carro para entrar. */
+export const ALCANCE_CARRO = 4.5;
+/** [id do carro, x, z, rotação, id de quem dirige ou ''] */
+export type EstadoCarro = [number, number, number, number, string];
+
+/* ---------- Sprint Review (retrospectiva de Halloween) ---------- */
+
+export const PERGUNTAS_RETRO = [
+  { emoji: '🍬', titulo: 'Doçuras', pergunta: 'O que foi bom nesta sprint?' },
+  { emoji: '🕸️', titulo: 'Travessuras traiçoeiras', pergunta: 'Que obstáculos atrapalharam?' },
+  { emoji: '🪄', titulo: 'Feitiços mágicos', pergunta: 'Que melhorias podemos implementar?' },
+  { emoji: '🎭', titulo: 'Festa à fantasia', pergunta: 'O que podemos experimentar na próxima?' },
+] as const;
+export const VOTOS_RETRO = 3; // votos de cada pessoa na votação
+export const TAMANHO_RESPOSTA = 60; // "em poucas palavras"
+export const RAIO_CENTRO_RETRO = 8; // para ficar "pronto", tem que estar perto do chafariz
+
+export type AcaoRetro = 'pronto' | 'baixar' | 'passar' | 'avancar' | 'terminarVoto';
+export type FaseRetro = 'reuniao' | 'pergunta' | 'votacao' | 'fim';
+export type StatusRetro = 'pensando' | 'levantada' | 'baixada';
+
+export interface RespostaRetro {
+  id: string;
+  pergunta: number;
+  autor: string;
+  nome: string;
+  texto: string;
+  votos: string[]; // quem votou
+}
+
+export interface EstadoRetro {
+  fase: FaseRetro;
+  anfitriao: string;
+  participantes: string[];
+  prontos: string[];
+  pergunta: number; // índice em PERGUNTAS_RETRO
+  status: Record<string, StatusRetro>;
+  placas: Record<string, string>; // placas levantadas agora (id → texto)
+  respostas: RespostaRetro[]; // todas na votação e no fim; antes, só as da pergunta atual
+  terminaramVoto: string[];
+  premiadas: string[]; // no fim: ids das 5 respostas mais votadas, em ordem
+}
