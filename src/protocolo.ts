@@ -233,8 +233,10 @@ export const CARROS: { modelo: string; x: number; z: number; rot: number }[] = [
 ];
 /** Distância máxima até o carro para entrar. */
 export const ALCANCE_CARRO = 4.5;
-/** [id do carro, x, z, rotação, id de quem dirige ou ''] */
-export type EstadoCarro = [number, number, number, number, string];
+/** Lugares por carro: quem entra primeiro dirige, os outros vão de passageiro. */
+export const LUGARES_CARRO = 4;
+/** [id do carro, x, z, rotação, id de quem dirige ou '', ids dos passageiros] */
+export type EstadoCarro = [number, number, number, number, string, string[]];
 
 /* ---------- Sprint Retro (retrospectiva de Halloween) ---------- */
 

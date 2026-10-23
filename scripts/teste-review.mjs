@@ -69,7 +69,26 @@ async function pessoa(nome, codigo) {
   await b.ir(-13, -28);
   await esperar(150);
   await b.mandar({ k: 'carro', c: 0 });
-  ok(b.ultimo('carros').l[0][4] === a.id, 'Carro ocupado: outro não entra');
+  let estado = b.ultimo('carros').l[0];
+  ok(estado[4] === a.id && estado[5].includes(b.id), 'Carro com motorista: quem entra vai de passageiro');
+  const extras = [];
+  for (const n of ['C', 'D', 'E']) {
+    const p = await pessoa(`Carro ${n}`, codigo);
+    await p.ir(-14, -28);
+    await esperar(120);
+    await p.mandar({ k: 'carro', c: 0 });
+    extras.push(p);
+  }
+  estado = a.ultimo('carros').l[0];
+  ok(estado[5].length === 3 && !estado[5].includes(extras[2].id), 'Até 4 pessoas por carro (1 dirige + 3 passageiros); a 5ª não entra');
+  await extras[0].mandar({ k: 'sairCarro' });
+  ok(a.ultimo('carros').l[0][5].length === 2, 'Passageiro desce e libera o lugar');
+  await b.ir(50, 50, 0, 4);
+  await esperar(250);
+  ok(!a.msgs.filter((m) => m.k === 'poses').flatMap((m) => m.l).some((p) => p[0] === b.id && p[1] === 50), 'Passageiro não consegue mover o carro (nem a si mesmo) enquanto está dentro');
+  await b.mandar({ k: 'sairCarro' });
+  for (const p of extras) await p.mandar({ k: 'sairCarro' });
+  for (const p of extras) p.ws.close();
 
   await a.ir(-5, -30.5, 1.57, 4);
   await esperar(250);

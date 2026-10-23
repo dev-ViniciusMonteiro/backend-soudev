@@ -6,7 +6,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { Partida } from './jogos';
 import { darXpPresenca, registrarPartida, skinPermitida } from './perfis';
-import { ALCANCE_CARRO, Anim, CARROS, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
+import { ALCANCE_CARRO, Anim, CARROS, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
 import { Retro } from './retro';
 
 interface Carro {
@@ -14,6 +14,7 @@ interface Carro {
   z: number;
   rot: number;
   motorista: string | null;
+  passageiros: string[];
 }
 
 const TICK_MS = 250; // regras dos jogos 4x por segundo
@@ -30,7 +31,8 @@ interface Config {
 /** O que fica preso a cada conexão (sobrevive à hibernação). */
 interface Anexo extends Jogador {
   desde: number; // quando entrou, para o XP de presença
-  carro?: number; // carro que está dirigindo
+  carro?: number; // carro em que está (dirigindo ou de passageiro)
+  passageiro?: boolean;
 }
 
 /** O que os outros jogadores veem (sem dados internos). */
@@ -59,7 +61,7 @@ export class Sala extends DurableObject<Env> {
   private ultimoEstado = 0;
   private filas = '';
   private retro: Retro | null = null;
-  private carros: Carro[] = CARROS.map((c) => ({ x: c.x, z: c.z, rot: c.rot, motorista: null }));
+  private carros: Carro[] = CARROS.map((c) => ({ x: c.x, z: c.z, rot: c.rot, motorista: null, passageiros: [] }));
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -69,7 +71,8 @@ export class Sala extends DurableObject<Env> {
       if (!j) continue;
       this.jogadores.set(ws, j);
       const c = j.carro !== undefined ? this.carros[j.carro] : undefined;
-      if (c) Object.assign(c, { x: j.pose[0], z: j.pose[2], rot: j.pose[3], motorista: j.id });
+      if (c && j.passageiro) c.passageiros.push(j.id);
+      else if (c) Object.assign(c, { x: j.pose[0], z: j.pose[2], rot: j.pose[3], motorista: j.id });
     }
     ctx.blockConcurrencyWhile(async () => {
       this.config = (await ctx.storage.get<Config>('config')) ?? null;
@@ -164,7 +167,12 @@ export class Sala extends DurableObject<Env> {
       // "Dirigindo" só vale para quem está mesmo num carro; o carro anda junto com a pose de quem dirige.
       const c = j.carro !== undefined ? this.carros[j.carro] : undefined;
       if (p[4] === Anim.Dirigindo && !c) p[4] = Anim.Parado;
-      if (c) Object.assign(c, { x: p[0], z: p[2], rot: p[3] });
+      // Passageiro não move o carro: vai junto com ele.
+      if (c && j.passageiro) return;
+      if (c) {
+        Object.assign(c, { x: p[0], z: p[2], rot: p[3] });
+        for (const [, o] of this.jogadores) if (c.passageiros.includes(o.id)) o.pose = [p[0], p[1], p[2], p[3], Anim.Dirigindo];
+      }
       this.ultimaPose.set(ws, agora);
       j.pose = p;
       this.mexeram.add(ws);
@@ -206,16 +214,23 @@ export class Sala extends DurableObject<Env> {
   /* ---------- Carros ---------- */
 
   private estadoCarros(): EstadoCarro[] {
-    return this.carros.map((c, i) => [i, Math.round(c.x * 100) / 100, Math.round(c.z * 100) / 100, Math.round(c.rot * 100) / 100, c.motorista ?? '']);
+    return this.carros.map((c, i) => [i, Math.round(c.x * 100) / 100, Math.round(c.z * 100) / 100, Math.round(c.rot * 100) / 100, c.motorista ?? '', [...c.passageiros]]);
   }
 
   private entrarNoCarro(ws: WebSocket, j: Anexo, n: unknown): void {
     const c = typeof n === 'number' ? this.carros[n] : undefined;
-    if (!c || c.motorista || j.carro !== undefined) return;
+    if (!c || j.carro !== undefined) return;
     // Durante uma partida, quem está jogando não pega carro (no pega-pega seria trapaça).
     if (this.partida?.participantes.includes(j.id)) return;
     if (Math.hypot(j.pose[0] - c.x, j.pose[2] - c.z) > ALCANCE_CARRO) return;
-    c.motorista = j.id;
+    // Volante livre: dirige. Senão, vai de passageiro se tiver lugar.
+    if (!c.motorista) {
+      c.motorista = j.id;
+      j.passageiro = false;
+    } else if (c.passageiros.length < LUGARES_CARRO - 1) {
+      c.passageiros.push(j.id);
+      j.passageiro = true;
+    } else return;
     j.carro = n as number;
     j.pose = [c.x, 0, c.z, c.rot, Anim.Dirigindo];
     ws.serializeAttachment(j);
@@ -225,8 +240,10 @@ export class Sala extends DurableObject<Env> {
   private sairDoCarro(j: Anexo): void {
     const c = j.carro !== undefined ? this.carros[j.carro] : undefined;
     if (!c) return;
-    c.motorista = null;
+    if (j.passageiro) c.passageiros = c.passageiros.filter((p) => p !== j.id);
+    else c.motorista = null;
     j.carro = undefined;
+    j.passageiro = false;
     if (j.pose[4] === Anim.Dirigindo) j.pose[4] = Anim.Parado;
     this.paraTodos({ k: 'carros', l: this.estadoCarros() });
   }
