@@ -4,8 +4,12 @@
 // Quem chega já vem identificado pelo Worker (perfil do token no D1), nos cabeçalhos X-Jogador-*.
 
 import { DurableObject } from 'cloudflare:workers';
-import { darXpPresenca, skinPermitida } from './perfis';
-import { EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type InfoSala, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, type MsgCliente, type MsgServidor, type Pose } from './protocolo';
+import { Partida } from './jogos';
+import { darXpPresenca, registrarPartida, skinPermitida } from './perfis';
+import { EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, type MsgCliente, type MsgServidor, type Pose, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
+
+const TICK_MS = 250; // regras dos jogos 4x por segundo
+const IDS_JOGOS = Object.keys(JOGOS) as IdJogo[];
 
 const SKIN_VALIDA = /^[\w:#|.,-]{0,200}$/;
 const INTERVALO_MIN_POSE = 1000 / 30; // ignora quem manda mais de 30 poses por segundo
@@ -41,6 +45,10 @@ export class Sala extends DurableObject<Env> {
   private mexeram = new Set<WebSocket>();
   private ultimaPose = new WeakMap<WebSocket, number>();
   private envio: ReturnType<typeof setTimeout> | null = null;
+  private partida: Partida | null = null;
+  private relogio: ReturnType<typeof setInterval> | null = null;
+  private ultimoEstado = 0;
+  private filas = '';
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -78,6 +86,8 @@ export class Sala extends DurableObject<Env> {
 
     const id = req.headers.get('X-Jogador-Id') ?? '';
     if (!id) return recusar('invalida');
+    // Partida rolando: a sala fica fechada para gente nova (quem caiu e é participante pode voltar).
+    if (this.partida && !this.partida.participantes.includes(id)) return recusar('fechada');
 
     // A mesma pessoa abrindo de novo (outra aba, reconexão): a conexão antiga sai.
     for (const [ws, j] of this.jogadores) {
@@ -107,6 +117,7 @@ export class Sala extends DurableObject<Env> {
 
     const sala: InfoSala = { codigo: this.config!.codigo, publica: this.config!.publica, max: MAX_JOGADORES };
     servidor.send(JSON.stringify({ k: 'bemvindo', eu: id, sala, jogadores: [...this.jogadores.values()].map(publico) } satisfies MsgServidor));
+    if (this.partida) servidor.send(JSON.stringify({ k: 'partida', p: this.partida.estado(Date.now()) } satisfies MsgServidor));
     this.paraTodos({ k: 'entrou', j: publico(j) }, servidor);
     this.avisarDiretorio();
     return new Response(null, { status: 101, webSocket: cliente });
@@ -126,6 +137,8 @@ export class Sala extends DurableObject<Env> {
       if (agora - (this.ultimaPose.get(ws) ?? 0) < INTERVALO_MIN_POSE) return;
       const p = poseValida(m.p);
       if (!p) return;
+      // Quem procura no esconde-esconde fica parado enquanto os outros escondem.
+      if (this.partida && !this.partida.podeMover(j.id)) return;
       this.ultimaPose.set(ws, agora);
       j.pose = p;
       this.mexeram.add(ws);
@@ -142,7 +155,84 @@ export class Sala extends DurableObject<Env> {
       j.skin = s;
       ws.serializeAttachment(j);
       this.paraTodos({ k: 'skin', id: j.id, s }, ws);
+    } else if (m.k === 'iniciar') {
+      this.iniciar(j.id, m.jogo);
     }
+  }
+
+  /* ---------- Jogos ---------- */
+
+  /** Quem está dentro de cada portal (só fora de partida). */
+  private calcularFilas(): Partial<Record<IdJogo, string[]>> {
+    const f: Partial<Record<IdJogo, string[]>> = {};
+    if (this.partida) return f;
+    for (const jogo of IDS_JOGOS) {
+      const [px, pz] = JOGOS[jogo].portal;
+      const ids = [...this.jogadores.values()].filter((j) => Math.hypot(j.pose[0] - px, j.pose[2] - pz) <= RAIO_PORTAL && j.pose[1] < 2).map((j) => j.id);
+      if (ids.length) f[jogo] = ids;
+    }
+    return f;
+  }
+
+  /** Manda as filas só quando mudam. */
+  private atualizarFilas(): void {
+    const f = this.calcularFilas();
+    const texto = JSON.stringify(f);
+    if (texto === this.filas) return;
+    this.filas = texto;
+    this.paraTodos({ k: 'filas', f });
+  }
+
+  private iniciar(quem: string, jogo: IdJogo): void {
+    if (this.partida || !JOGOS[jogo]) return;
+    const fila = this.calcularFilas()[jogo] ?? [];
+    if (!fila.includes(quem) || fila.length < JOGOS[jogo].min) return;
+    const agora = Date.now();
+    this.partida = new Partida(jogo, fila, agora, Number(this.env.DURACAO_FATOR || 1));
+    this.filas = '';
+    this.ultimoEstado = agora;
+    this.paraTodos({ k: 'partida', p: this.partida.estado(agora) });
+    this.avisarDiretorio(); // fecha a sala no "Jogar"
+    this.relogio = setInterval(() => this.tick(), TICK_MS);
+  }
+
+  private tick(): void {
+    const p = this.partida;
+    if (!p) return;
+    const agora = Date.now();
+    const pos = new Map([...this.jogadores.values()].map((j) => [j.id, { x: j.pose[0], y: j.pose[1], z: j.pose[2] }]));
+    const { eventos, acabou, mudouFase } = p.tick(agora, pos);
+    for (const e of eventos) this.paraTodos(e);
+    if (acabou) {
+      void this.terminar();
+      return;
+    }
+    // Estado completo a cada segundo, ou na hora quando algo muda.
+    if (eventos.length || mudouFase || agora - this.ultimoEstado >= 1000) {
+      this.ultimoEstado = agora;
+      this.paraTodos({ k: 'partida', p: p.estado(agora) });
+    }
+  }
+
+  private async terminar(cancelada = false): Promise<void> {
+    const p = this.partida;
+    if (!p) return;
+    this.partida = null;
+    if (this.relogio) clearInterval(this.relogio);
+    this.relogio = null;
+    this.paraTodos({ k: 'partida', p: null });
+    this.avisarDiretorio(); // reabre a sala
+    this.atualizarFilas();
+    if (cancelada || p.fase !== 'jogando') return;
+    const res = p.resultado();
+    const nomes = new Map([...this.jogadores.values()].map((j) => [j.id, j.nome]));
+    let conquistas: Record<string, string[]> = {};
+    try {
+      conquistas = await registrarPartida(this.env.DB, { jogo: p.jogo, sala: this.config?.codigo ?? '', inicio: p.inicio, fim: Date.now(), resultados: res });
+    } catch (e) {
+      console.error('registrar partida', e);
+    }
+    this.paraTodos({ k: 'resultado', jogo: p.jogo, l: res.map((r) => ({ ...r, nome: nomes.get(r.id) ?? '?' })), conquistas });
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
@@ -165,6 +255,9 @@ export class Sala extends DurableObject<Env> {
     this.mexeram.delete(ws);
     this.paraTodos({ k: 'saiu', id: j.id });
     this.avisarDiretorio();
+    // Saiu no meio da partida: sai dela também; sem gente suficiente (ou sem quem procura), acaba.
+    if (this.partida?.sair(j.id)) void this.terminar(this.partida.participantes.length < 2);
+    else this.atualizarFilas();
     // XP de presença: 1 por minuto na praça (o limite diário fica no banco).
     const minutos = (Date.now() - j.desde) / Number(this.env.PRESENCA_MS || 60000);
     if (minutos >= 1) this.ctx.waitUntil(darXpPresenca(this.env.DB, j.id, minutos).catch((e) => console.error('xp de presença', e)));
@@ -184,7 +277,23 @@ export class Sala extends DurableObject<Env> {
         ws.serializeAttachment(j);
       }
       this.mexeram.clear();
-      this.paraTodos({ k: 'poses', l });
+      const p = this.partida;
+      if (p?.jogo === 'esconde-esconde' && p.buscador && p.fase !== 'contagem') {
+        // Quem procura só recebe a posição de quem ainda está escondido se estiver no alcance da lanterna.
+        const b = [...this.jogadores.values()].find((j) => j.id === p.buscador);
+        const escondidos = new Set(p.escondidos());
+        const longe = (x: [string, ...Pose]): boolean => escondidos.has(x[0]) && (!b || Math.hypot(x[1] - b.pose[0], x[3] - b.pose[2]) > VISAO_BUSCADOR);
+        const texto = JSON.stringify({ k: 'poses', l } satisfies MsgServidor);
+        const textoBuscador = JSON.stringify({ k: 'poses', l: l.filter((x) => !longe(x)) } satisfies MsgServidor);
+        for (const [ws, j] of this.jogadores) {
+          try {
+            ws.send(j.id === p.buscador ? textoBuscador : texto);
+          } catch {
+            /* conexão caindo */
+          }
+        }
+      } else this.paraTodos({ k: 'poses', l });
+      this.atualizarFilas();
     }, 1000 / ENVIOS_POR_SEGUNDO);
   }
 
@@ -204,6 +313,6 @@ export class Sala extends DurableObject<Env> {
     if (!this.config?.publica) return;
     const { codigo } = this.config;
     const n = this.jogadores.size;
-    this.ctx.waitUntil(this.env.DIRETORIO.getByName('global').atualizar(codigo, n, true));
+    this.ctx.waitUntil(this.env.DIRETORIO.getByName('global').atualizar(codigo, n, !this.partida));
   }
 }

@@ -10,7 +10,9 @@
     // Milissegundos de praça por 1 XP de presença (o teste local usa menos).
     "PRESENCA_MS": "60000",
     // "1" liga rotas de teste; só no wrangler dev do teste, nunca no publicado.
-    "MODO_TESTE": "0"
+    "MODO_TESTE": "0",
+    // Multiplica as durações das partidas (o teste local usa 0.05).
+    "DURACAO_FATOR": "1"
   },
   "durable_objects": {
     "bindings": [

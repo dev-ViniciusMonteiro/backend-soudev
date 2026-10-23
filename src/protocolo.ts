@@ -41,7 +41,8 @@ export interface InfoSala {
 export type MsgCliente =
   | { k: 'pose'; p: Pose }
   | { k: 'emote'; e: Emote }
-  | { k: 'skin'; s: Skin };
+  | { k: 'skin'; s: Skin }
+  | MsgClienteJogo;
 
 /* ---------- Servidor → jogo ---------- */
 
@@ -53,7 +54,8 @@ export type MsgServidor =
   | { k: 'poses'; l: [string, ...Pose][] }
   | { k: 'emote'; id: string; e: Emote }
   | { k: 'skin'; id: string; s: Skin }
-  | { k: 'erro'; motivo: MotivoErro };
+  | { k: 'erro'; motivo: MotivoErro }
+  | MsgServidorJogo;
 
 export type MotivoErro = 'cheia' | 'fechada' | 'invalida' | 'duplicado' | 'bloqueado';
 
@@ -149,3 +151,64 @@ export interface RespostaRanking {
   lista: LinhaRanking[];
   eu: LinhaRanking | null;
 }
+
+/* ---------- Jogos da praça (portais) ---------- */
+
+export type IdJogo = 'pega-pega' | 'rei-da-colina' | 'esconde-esconde';
+
+export interface InfoJogo {
+  nome: string;
+  descricao: string;
+  min: number; // jogadores para começar
+  segundos: number; // duração da partida (no esconde-esconde, depois do tempo para esconder)
+  portal: [number, number]; // centro do portal na praça (x, z)
+}
+
+export const JOGOS: Record<IdJogo, InfoJogo> = {
+  'pega-pega': { nome: 'Pega-pega', descricao: 'Quem está pegando passa ao encostar em alguém. Ganha quem ficar menos tempo pegando.', min: 2, segundos: 90, portal: [-13, -6] },
+  'rei-da-colina': { nome: 'Rei da colina', descricao: 'Fique no círculo em volta do chafariz. Ganha quem somar mais tempo lá dentro.', min: 2, segundos: 90, portal: [13, -6] },
+  'esconde-esconde': { nome: 'Esconde-esconde', descricao: 'Um procura com a lanterna, os outros se escondem. Encostou, achou.', min: 2, segundos: 100, portal: [0, 15] },
+};
+
+/** Ficar dentro deste raio do portal = estar na fila do jogo. */
+export const RAIO_PORTAL = 2.2;
+/** Pega-pega e esconde-esconde: distância para pegar/achar alguém. */
+export const DISTANCIA_PEGAR = 1.5;
+/** Rei da colina: anel em volta do chafariz (centro 0,0). */
+export const ZONA_REI = { de: 2.8, ate: 7 };
+/** Esconde-esconde: segundos para esconder e alcance da lanterna de quem procura. */
+export const SEGUNDOS_ESCONDER = 20;
+export const VISAO_BUSCADOR = 10;
+/** Segundos de contagem antes de começar. */
+export const SEGUNDOS_CONTAGEM = 3;
+
+export type FasePartida = 'contagem' | 'esconder' | 'jogando';
+
+/** Estado da partida que todos na sala recebem (quem está jogando e quem só assiste). */
+export interface EstadoPartida {
+  jogo: IdJogo;
+  fase: FasePartida;
+  participantes: string[];
+  restanteMs: number; // até o fim da fase atual
+  pegador?: string; // pega-pega
+  buscador?: string; // esconde-esconde
+  achados?: string[]; // esconde-esconde
+  placar: Record<string, number>; // segundos (pegando, na zona, escondido)
+}
+
+export interface LinhaResultado {
+  id: string;
+  nome: string;
+  posicao: number;
+  pontos: number;
+  xp: number;
+  moedas: number;
+}
+
+/* Mensagens a mais dos jogos (somam com MsgCliente/MsgServidor). */
+export type MsgClienteJogo = { k: 'iniciar'; jogo: IdJogo };
+export type MsgServidorJogo =
+  | { k: 'filas'; f: Partial<Record<IdJogo, string[]>> }
+  | { k: 'partida'; p: EstadoPartida | null }
+  | { k: 'pegou'; de: string; para: string } // pega-pega: passou / esconde-esconde: achou
+  | { k: 'resultado'; jogo: IdJogo; l: LinhaResultado[]; conquistas: Record<string, string[]> };

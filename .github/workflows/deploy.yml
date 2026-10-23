@@ -19,8 +19,8 @@ jobs:
       - run: npm run typecheck
       - name: Testar as salas
         run: |
-          # Rotas de teste e XP de presença acelerado, só neste servidor local.
-          printf 'MODO_TESTE=1\nPRESENCA_MS=200\n' > .dev.vars
+          # Rotas de teste, XP de presença e partidas aceleradas, só neste servidor local.
+          printf 'MODO_TESTE=1\nPRESENCA_MS=200\nDURACAO_FATOR=0.05\n' > .dev.vars
           npx wrangler d1 migrations apply soudev-jogos --local
           npx wrangler dev --port 8787 > wrangler-dev.log 2>&1 &
           for i in $(seq 1 60); do curl -s localhost:8787/saude && break; sleep 1; done
