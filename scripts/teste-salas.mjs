@@ -92,12 +92,12 @@ if (LOCAL) ok((await api('/jogar', { metodo: 'POST' })).d.codigo === codigo, 'Pr
 
 b.mandar({ k: 'pose', p: [3, 0, 4, 1.5, 1] });
 await esperar(60);
-b.mandar({ k: 'pose', p: [999, 0, -999, 0, 2] });
+b.mandar({ k: 'pose', p: [9999, 0, -9999, 0, 2] });
 await esperar(400);
 const lotes = a.tipo('poses');
 const ultima = lotes.flatMap((l) => l.l).filter((p) => p[0] === bvB.eu).pop();
 ok(lotes.length >= 1 && lotes.length <= 2, `Poses chegam em lote (${lotes.length} lote(s) para 2 envios)`);
-ok(ultima && ultima[1] === 80 && ultima[3] === -80, 'Posição fora do mundo é limitada (±80)');
+ok(ultima && ultima[1] === 260 && ultima[3] === -260, 'Posição fora do mundo é limitada (±260, com o domo)');
 b.mandar({ k: 'pose', p: [1, 0, 'x', 0, 0] });
 await esperar(300);
 ok(a.tipo('poses').length === lotes.length, 'Pose inválida é ignorada');
@@ -181,8 +181,8 @@ if (LOCAL) {
   ok((await api('/perfil', { metodo: 'PATCH', token: pa.token, dados: { skin: 'pele:1|chapeu:coroa|cabelo:arrepiado' } })).status === 200, 'Agora pode usar a coroa (conquista) e o cabelo arrepiado (nível 2)');
 
   const rk = (await api('/ranking?por=rei-da-colina', { token: pb.token })).d;
-  // O banco local guarda rodadas anteriores: compara só estes dois jogadores.
-  const linhaA = rk.lista.find((l) => l.id === pa.perfil.id);
+  // O banco local guarda rodadas anteriores (o vencedor pode nem estar no top 20): usa a posição de cada um.
+  const linhaA = (await api('/ranking?por=rei-da-colina', { token: pa.token })).d.eu;
   ok(linhaA?.valor > 1000 && rk.eu?.valor < 1000 && rk.eu.posicao > linhaA.posicao, `Ranking do jogo: vencedor ${linhaA?.valor} (${linhaA?.posicao}º), segundo ${rk.eu?.valor} (${rk.eu?.posicao}º), estilo Elo`);
   const rn = (await api('/ranking?por=nivel', { token: pa.token })).d;
   ok(rn.eu?.valor === 2 && rn.lista.length > 0, `Ranking por nível traz a sua posição (${rn.eu?.posicao}º)`);

@@ -4,7 +4,7 @@
 export const MAX_JOGADORES = 12;
 
 /** Tamanho do mundo: ninguém sai deste quadrado (metros, centro em 0,0). A praça fica no meio, cercada de ruas e quarteirões. */
-export const LIMITE_MUNDO = 80;
+export const LIMITE_MUNDO = 260;
 
 /** Quantas vezes por segundo o jogo manda a posição (só quando se mexe) e o servidor repassa o lote. */
 export const ENVIOS_POR_SEGUNDO = 10;
@@ -188,7 +188,7 @@ export interface RespostaRanking {
 
 /* ---------- Jogos da praça (portais) ---------- */
 
-export type IdJogo = 'pega-pega' | 'rei-da-colina' | 'esconde-esconde' | 'sprint-retro';
+export type IdJogo = 'pega-pega' | 'rei-da-colina' | 'esconde-esconde' | 'sprint-retro' | 'mata-mata';
 
 export interface InfoJogo {
   nome: string;
@@ -202,6 +202,7 @@ export const JOGOS: Record<IdJogo, InfoJogo> = {
   'pega-pega': { nome: 'Pega-pega', descricao: 'Quem está pegando passa ao encostar em alguém. Ganha quem ficar menos tempo pegando.', min: 2, segundos: 90, portal: [-13, -6] },
   'rei-da-colina': { nome: 'Rei da colina', descricao: 'Fique no círculo em volta do chafariz. Ganha quem somar mais tempo lá dentro.', min: 2, segundos: 90, portal: [13, -6] },
   'esconde-esconde': { nome: 'Esconde-esconde', descricao: 'Um procura com a lanterna, os outros se escondem. Encostou, achou.', min: 2, segundos: 100, portal: [0, 15] },
+  'mata-mata': { nome: 'Mata-mata (CS)', descricao: 'TR contra CT no domo, por rodadas, com compra de armas. Ganha o time que fizer 4 rodadas primeiro.', min: 2, segundos: 0, portal: [0, -14] },
   'sprint-retro': { nome: 'Sprint Retro', descricao: 'Retrospectiva de Halloween com a sala inteira: perguntas, placas na mão, votação e relatório.', min: 1, segundos: 0, portal: [-13, 6] },
 };
 
@@ -247,14 +248,16 @@ export type MsgClienteJogo =
   | { k: 'sairCarro' }
   | { k: 'placa'; t: string } // sprint retro: levantar (ou trocar) a placa com a resposta
   | { k: 'retro'; a: AcaoRetro }
-  | { k: 'voto'; r: string }; // sprint retro: votar (ou tirar o voto) numa resposta
+  | { k: 'voto'; r: string } // sprint retro: votar (ou tirar o voto) numa resposta
+  | MsgClienteMM;
 export type MsgServidorJogo =
   | { k: 'filas'; f: Partial<Record<IdJogo, string[]>> }
   | { k: 'partida'; p: EstadoPartida | null }
   | { k: 'pegou'; de: string; para: string } // pega-pega: passou / esconde-esconde: achou
   | { k: 'resultado'; jogo: IdJogo; l: LinhaResultado[]; conquistas: Record<string, string[]> }
   | { k: 'carros'; l: EstadoCarro[] }
-  | { k: 'retro'; r: EstadoRetro | null };
+  | { k: 'retro'; r: EstadoRetro | null }
+  | MsgServidorMM;
 
 /* ---------- Carros ---------- */
 
@@ -313,3 +316,153 @@ export interface EstadoRetro {
   querSair: string[]; // votaram para encerrar
   cancelada: boolean; // encerrada por votação (sem pontos)
 }
+
+/* ---------- Mata-mata (estilo CS) no domo ---------- */
+
+/** Centro do domo no mundo (do lado da cidade). As coordenadas do mapa abaixo são relativas a ele. */
+export const DOMO: [number, number] = [190, 0];
+export const RAIO_DOMO = 52;
+/** Metade do lado da arena: ninguém sai deste quadrado (relativo ao domo). */
+export const LIMITE_ARENA = 35;
+export const ALTURA_OLHO = 1.6;
+
+/** Caixa sólida do mapa: centro (x, z), largura, profundidade e altura. Paredes altas param bala; caixotes baixos, só se a bala passar por baixo do topo. */
+export type Bloco = [number, number, number, number, number];
+
+/**
+ * Mapa inspirado na Dust2, simplificado (vista de cima, norte = -z):
+ * TR nasce no sul, CT no norte. Meio com portas no centro; "Long" A pela direita, túnel do B pela esquerda;
+ * passarela do meio para o A; bomb A no nordeste e bomb B no noroeste, com caixotes.
+ */
+export const MAPA_ARENA: Bloco[] = [
+  // Bordas
+  [0, -35.5, 72, 1, 6],
+  [0, 35.5, 72, 1, 6],
+  [-35.5, 0, 1, 72, 6],
+  [35.5, 0, 1, 72, 6],
+  // Quarteirões grandes entre os corredores
+  [14, 8, 16, 20, 5], // entre o meio e o Long A
+  [-14, 8, 16, 20, 5], // entre o meio e o túnel do B
+  [31.5, 7, 7, 22, 5], // parede de fora do Long A (corredor de 6 m)
+  [-31.5, 7, 7, 22, 5], // parede de fora do túnel B (corredor de 6 m)
+  // Portas do meio (vão de 3 m)
+  [-3.75, -8, 4.5, 1, 4],
+  [3.75, -8, 4.5, 1, 4],
+  // Laterais da base CT (separa o CT dos bombs até z = -18)
+  [8.5, -13, 1, 10, 4],
+  [-8.5, -13, 1, 10, 4],
+  // Caixotes do bomb A
+  [20, -22, 3, 3, 1.4],
+  [26.5, -27, 2, 2, 1.4],
+  [14, -29, 2.5, 2.5, 1.4],
+  [28, -14, 2, 4, 1.4],
+  // Caixotes do bomb B
+  [-20, -22, 3, 3, 1.4],
+  [-26.5, -15, 2, 2, 1.4],
+  [-14, -28, 2.5, 2.5, 1.4],
+  [-28, -28, 3, 2, 1.4],
+  // Coberturas no meio, no Long e no túnel
+  [0, 6, 2, 2, 1.4],
+  [25, 12, 2, 2, 1.4],
+  [-25, 12, 2, 2, 1.4],
+  [0, 24, 6, 1, 1.4],
+];
+
+export const SPAWNS: Record<'TR' | 'CT', [number, number][]> = {
+  TR: [
+    [0, 30],
+    [-4, 30],
+    [4, 30],
+    [-8, 28],
+    [8, 28],
+    [0, 26],
+  ],
+  CT: [
+    [0, -30],
+    [-4, -30],
+    [4, -30],
+    [-3, -26],
+    [3, -26],
+    [0, -24],
+  ],
+};
+
+export type Time = 'TR' | 'CT';
+export type SlotArma = 'primaria' | 'secundaria' | 'faca';
+
+export interface Arma {
+  id: string;
+  nome: string;
+  slot: SlotArma;
+  preco: number;
+  dano: number;
+  cadenciaMs: number;
+  pente: number;
+  reserva: number;
+  recargaMs: number;
+  alcance: number;
+  dispersao: number; // radianos (parado); andando dobra
+  auto: boolean;
+  time?: Time; // só um time compra (AK é TR, M4 é CT)
+  mira?: boolean; // dá zoom (AWP)
+}
+
+export const ARMAS_MM: Arma[] = [
+  { id: 'faca', nome: 'Faca', slot: 'faca', preco: 0, dano: 55, cadenciaMs: 500, pente: 0, reserva: 0, recargaMs: 0, alcance: 2.2, dispersao: 0, auto: false },
+  { id: 'glock', nome: 'Glock', slot: 'secundaria', preco: 200, dano: 25, cadenciaMs: 150, pente: 20, reserva: 120, recargaMs: 2200, alcance: 60, dispersao: 0.02, auto: false, time: 'TR' },
+  { id: 'usp', nome: 'USP', slot: 'secundaria', preco: 200, dano: 32, cadenciaMs: 170, pente: 12, reserva: 36, recargaMs: 2200, alcance: 60, dispersao: 0.015, auto: false, time: 'CT' },
+  { id: 'deagle', nome: 'Desert Eagle', slot: 'secundaria', preco: 700, dano: 55, cadenciaMs: 300, pente: 7, reserva: 35, recargaMs: 2200, alcance: 80, dispersao: 0.02, auto: false },
+  { id: 'mp5', nome: 'MP5', slot: 'primaria', preco: 1250, dano: 26, cadenciaMs: 80, pente: 30, reserva: 120, recargaMs: 2600, alcance: 60, dispersao: 0.03, auto: true },
+  { id: 'ak47', nome: 'AK-47', slot: 'primaria', preco: 2700, dano: 36, cadenciaMs: 100, pente: 30, reserva: 90, recargaMs: 2500, alcance: 100, dispersao: 0.02, auto: true, time: 'TR' },
+  { id: 'm4', nome: 'M4A4', slot: 'primaria', preco: 3100, dano: 33, cadenciaMs: 90, pente: 30, reserva: 90, recargaMs: 3000, alcance: 100, dispersao: 0.016, auto: true, time: 'CT' },
+  { id: 'awp', nome: 'AWP', slot: 'primaria', preco: 4750, dano: 115, cadenciaMs: 1450, pente: 10, reserva: 30, recargaMs: 3600, alcance: 140, dispersao: 0.002, auto: false, mira: true },
+];
+/** Colete (100 de armadura) e colete com capacete (protege a cabeça). */
+export const PRECO_COLETE = 650;
+export const PRECO_CAPACETE = 1000;
+export const DINHEIRO_INICIAL = 800;
+export const DINHEIRO_MAX = 16000;
+export const RODADAS_PARA_VENCER = 4;
+export const SEGUNDOS_COMPRA = 8; // congelado escolhendo armas
+export const SEGUNDOS_RODADA = 100;
+export const SEGUNDOS_FIM_RODADA = 4;
+
+export type FaseMM = 'compra' | 'rodada' | 'fimRodada';
+
+export interface JogadorMM {
+  time: Time;
+  vivo: boolean;
+  hp: number;
+  armadura: number;
+  capacete: boolean;
+  dinheiro: number;
+  abates: number;
+  mortes: number;
+  primaria: string | null;
+  secundaria: string;
+  arma: SlotArma; // na mão
+  municao: Record<string, [number, number]>; // arma → [pente, reserva]
+  spawn: [number, number];
+}
+
+export interface EstadoMM {
+  fase: FaseMM;
+  rodada: number;
+  placar: Record<Time, number>;
+  restanteMs: number;
+  jogadores: Record<string, JogadorMM>;
+  vencedorRodada?: Time;
+}
+
+export type MsgClienteMM =
+  | { k: 'comprar'; item: string }
+  | { k: 'empunhar'; slot: SlotArma }
+  | { k: 'recarregar' }
+  /** Tiro: direção da mira; se o jogo achou alguém na mira, diz quem e onde (o servidor confere). */
+  | { k: 'tiro'; d: [number, number, number]; alvo?: string; cabeca?: boolean };
+
+export type MsgServidorMM =
+  | { k: 'mm'; e: EstadoMM | null }
+  | { k: 'tiro'; de: string; o: [number, number, number]; p: [number, number, number]; arma: string }
+  | { k: 'dano'; de: string; para: string; hp: number; cabeca: boolean }
+  | { k: 'abate'; de: string; para: string; arma: string; cabeca: boolean };

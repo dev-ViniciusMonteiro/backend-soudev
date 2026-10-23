@@ -5,8 +5,9 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { Partida } from './jogos';
+import { MataMata, type PosMM } from './matamata';
 import { darXpPresenca, registrarPartida, skinPermitida } from './perfis';
-import { ALCANCE_CARRO, Anim, CARROS, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, SKIN_VALIDA, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
+import { ALCANCE_CARRO, Anim, CARROS, DOMO, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, SKIN_VALIDA, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
 import { Retro } from './retro';
 
 interface Carro {
@@ -60,6 +61,9 @@ export class Sala extends DurableObject<Env> {
   private ultimoEstado = 0;
   private filas = '';
   private retro: Retro | null = null;
+  private mm: MataMata | null = null;
+  private relogioMM: ReturnType<typeof setInterval> | null = null;
+  private ultimoEstadoMM = 0;
   private carros: Carro[] = CARROS.map((c) => ({ x: c.x, z: c.z, rot: c.rot, motorista: null, passageiros: [] }));
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -108,6 +112,7 @@ export class Sala extends DurableObject<Env> {
     // Partida ou Sprint Retro rolando: a sala fica fechada para gente nova (quem caiu e participa pode voltar).
     if (this.partida && !this.partida.participantes.includes(id)) return recusar('fechada');
     if (this.retro && !this.retro.participantes.includes(id)) return recusar('fechada');
+    if (this.mm && !this.mm.jogadores.has(id)) return recusar('fechada');
 
     // A mesma pessoa abrindo de novo (outra aba, reconexão): a conexão antiga sai.
     for (const [ws, j] of this.jogadores) {
@@ -142,6 +147,7 @@ export class Sala extends DurableObject<Env> {
     if (this.retro?.voltou(id)) this.retroMudou();
     else if (this.retro) servidor.send(JSON.stringify({ k: 'retro', r: this.retro.estado() } satisfies MsgServidor));
     servidor.send(JSON.stringify({ k: 'carros', l: this.estadoCarros() } satisfies MsgServidor));
+    if (this.mm) servidor.send(JSON.stringify({ k: 'mm', e: this.mm.estado(Date.now()) } satisfies MsgServidor));
     this.paraTodos({ k: 'entrou', j: publico(j) }, servidor);
     this.avisarDiretorio();
     return new Response(null, { status: 101, webSocket: cliente });
@@ -188,6 +194,8 @@ export class Sala extends DurableObject<Env> {
       j.skin = s;
       ws.serializeAttachment(j);
       this.paraTodos({ k: 'skin', id: j.id, s }, ws);
+    } else if (this.mm?.jogadores.has(j.id) && (m.k === 'comprar' || m.k === 'empunhar' || m.k === 'recarregar' || m.k === 'tiro')) {
+      this.acaoMM(j, m);
     } else if (m.k === 'iniciar') {
       this.iniciar(j.id, m.jogo);
     } else if (m.k === 'carro') {
@@ -208,6 +216,68 @@ export class Sala extends DurableObject<Env> {
       else if (m.a === 'sair') mudou = r.votarSair(j.id);
       if (mudou) this.retroMudou();
     }
+  }
+
+  /* ---------- Mata-mata ---------- */
+
+  /** Posições dos jogadores relativas ao centro do domo. */
+  private posicoesMM(): Map<string, PosMM> {
+    return new Map([...this.jogadores.values()].map((j) => [j.id, { x: j.pose[0] - DOMO[0], y: j.pose[1], z: j.pose[2] - DOMO[1] }]));
+  }
+
+  private acaoMM(j: Anexo, m: MsgCliente): void {
+    const mm = this.mm!;
+    const agora = Date.now();
+    let mudou = false;
+    if (m.k === 'comprar') mudou = mm.comprar(j.id, String(m.item), agora);
+    else if (m.k === 'empunhar') mudou = mm.empunhar(j.id, m.slot);
+    else if (m.k === 'recarregar') mudou = mm.recarregar(j.id, agora);
+    else if (m.k === 'tiro') {
+      const eventos = mm.atirar(j.id, m.d, m.alvo, m.cabeca, this.posicoesMM(), agora);
+      for (const e of eventos) this.paraTodos(e);
+      mudou = eventos.some((e) => e.k !== 'tiro');
+    }
+    if (mudou) this.enviarMM(agora);
+  }
+
+  private enviarMM(agora: number): void {
+    if (!this.mm) return;
+    this.ultimoEstadoMM = agora;
+    this.paraTodos({ k: 'mm', e: this.mm.estado(agora) });
+  }
+
+  private tickMM(): void {
+    const mm = this.mm;
+    if (!mm) return;
+    const agora = Date.now();
+    const { mudou, acabou } = mm.tick(agora);
+    if (acabou) {
+      void this.terminarMM(true);
+      return;
+    }
+    // Estado completo a cada segundo (relógio e munição) ou na hora quando muda de fase.
+    if (mudou || agora - this.ultimoEstadoMM >= 1000) this.enviarMM(agora);
+  }
+
+  private async terminarMM(comResultado: boolean): Promise<void> {
+    const mm = this.mm;
+    if (!mm) return;
+    this.mm = null;
+    if (this.relogioMM) clearInterval(this.relogioMM);
+    this.relogioMM = null;
+    this.paraTodos({ k: 'mm', e: null });
+    this.avisarDiretorio();
+    this.atualizarFilas();
+    if (!comResultado || !mm.vencedor) return;
+    const res = mm.resultado();
+    const nomes = new Map([...this.jogadores.values()].map((j) => [j.id, j.nome]));
+    let conquistas: Record<string, string[]> = {};
+    try {
+      conquistas = await registrarPartida(this.env.DB, { jogo: 'mata-mata', sala: this.config?.codigo ?? '', inicio: mm.inicio, fim: Date.now(), resultados: res });
+    } catch (e) {
+      console.error('registrar mata-mata', e);
+    }
+    this.paraTodos({ k: 'resultado', jogo: 'mata-mata', l: res.map((x) => ({ ...x, nome: nomes.get(x.id) ?? '?' })), conquistas });
   }
 
   /* ---------- Carros ---------- */
@@ -294,7 +364,7 @@ export class Sala extends DurableObject<Env> {
   /** Quem está dentro de cada portal (só fora de partida). */
   private calcularFilas(): Partial<Record<IdJogo, string[]>> {
     const f: Partial<Record<IdJogo, string[]>> = {};
-    if (this.partida || this.retro) return f;
+    if (this.partida || this.retro || this.mm) return f;
     for (const jogo of IDS_JOGOS) {
       const [px, pz] = JOGOS[jogo].portal;
       const ids = [...this.jogadores.values()].filter((j) => Math.hypot(j.pose[0] - px, j.pose[2] - pz) <= RAIO_PORTAL && j.pose[1] < 2).map((j) => j.id);
@@ -313,9 +383,25 @@ export class Sala extends DurableObject<Env> {
   }
 
   private iniciar(quem: string, jogo: IdJogo): void {
-    if (this.partida || this.retro || !JOGOS[jogo]) return;
+    if (this.partida || this.retro || this.mm || !JOGOS[jogo]) return;
     const fila = this.calcularFilas()[jogo] ?? [];
     if (!fila.includes(quem) || fila.length < JOGOS[jogo].min) return;
+    // Mata-mata: quem estava no portal vai para o domo (times alternados), o resto assiste.
+    if (jogo === 'mata-mata') {
+      for (const [ws, j] of this.jogadores)
+        if (fila.includes(j.id) && j.carro !== undefined) {
+          this.sairDoCarro(j);
+          ws.serializeAttachment(j);
+        }
+      const agora = Date.now();
+      this.mm = new MataMata(fila, agora, Number(this.env.DURACAO_FATOR || 1));
+      this.filas = '';
+      this.ultimoEstadoMM = agora;
+      this.paraTodos({ k: 'mm', e: this.mm.estado(agora) });
+      this.avisarDiretorio();
+      this.relogioMM = setInterval(() => this.tickMM(), 250);
+      return;
+    }
     // Sprint Retro: participa a sala inteira (não só quem está no portal).
     if (jogo === 'sprint-retro') {
       this.retro = new Retro(
@@ -401,6 +487,8 @@ export class Sala extends DurableObject<Env> {
     this.mexeram.delete(ws);
     this.paraTodos({ k: 'saiu', id: j.id });
     this.avisarDiretorio();
+    // Saiu no meio do mata-mata: se um time ficou vazio, o outro vence.
+    if (this.mm?.sair(j.id)) void this.terminarMM(this.mm.jogadores.size > 0);
     // Estava dirigindo: o carro fica parado onde parou.
     if (j.carro !== undefined) this.sairDoCarro(j);
     // Saiu no meio da partida: sai dela também; sem gente suficiente (ou sem quem procura), acaba.
@@ -467,6 +555,6 @@ export class Sala extends DurableObject<Env> {
     if (!this.config?.publica) return;
     const { codigo } = this.config;
     const n = this.jogadores.size;
-    this.ctx.waitUntil(this.env.DIRETORIO.getByName('global').atualizar(codigo, n, !this.partida && !this.retro));
+    this.ctx.waitUntil(this.env.DIRETORIO.getByName('global').atualizar(codigo, n, !this.partida && !this.retro && !this.mm));
   }
 }
