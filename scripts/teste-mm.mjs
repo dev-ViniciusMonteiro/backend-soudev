@@ -62,8 +62,8 @@ const codigo = (await api('/salas', { metodo: 'POST' })).d.codigo;
 const a = await pessoa('MM A', codigo);
 const b = await pessoa('MM B', codigo);
 const c = await pessoa('MM C', codigo); // assiste
-await a.ir(0, -14, false);
-await b.ir(1, -14, false);
+await a.ir(-28, -52, false);
+await b.ir(-27, -52, false);
 await esperar(250);
 ok(a.ultimo('filas')?.f['mata-mata']?.length === 2, 'Os dois no portal do mata-mata entram na fila');
 await a.mandar({ k: 'iniciar', jogo: 'mata-mata' }, 300);

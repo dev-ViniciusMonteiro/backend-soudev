@@ -76,8 +76,8 @@ async function pessoa(nome, codigo) {
 const codigo = (await api('/salas', { metodo: 'POST' })).d.codigo;
 const a = await pessoa('Corre A', codigo);
 const b = await pessoa('Corre B', codigo);
-await a.ir(8, 15, true, 100);
-await b.ir(9, 15, true, 100);
+await a.ir(-52, -28, true, 100);
+await b.ir(-51, -28, true, 100);
 await esperar(250);
 ok(a.ultimo('filas')?.f.corrida?.length === 2, 'Os dois no portal da corrida entram na fila');
 await a.mandar({ k: 'iniciar', jogo: 'corrida' }, 300);

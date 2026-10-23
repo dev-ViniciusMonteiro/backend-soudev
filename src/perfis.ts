@@ -257,3 +257,9 @@ export async function ranking(db: D1Database, por: string, meuId: string | null)
   const linha = (l: Linha, posicao: number): LinhaRanking => ({ posicao, id: l.id, apelido: l.apelido, nivel: nivelDoXp(l.xp), valor: por === 'nivel' ? nivelDoXp(l.valor) : l.valor });
   return { por, temporada: por === 'nivel' || por === 'moedas' ? undefined : temporadaAtual(), lista: lista.map((l, i) => linha(l, i + 1)), eu: minha ? linha(minha, minha.posicao) : null };
 }
+
+/** Saldo de moedas agora (0 se o perfil não existe). */
+export async function saldoMoedas(db: D1Database, id: string): Promise<number> {
+  const r = await db.prepare('SELECT moedas FROM jogadores WHERE id = ?1').bind(id).first<{ moedas: number }>();
+  return r?.moedas ?? 0;
+}

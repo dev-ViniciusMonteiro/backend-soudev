@@ -8,8 +8,9 @@ import { Partida } from './jogos';
 import { MataMata, type PosMM } from './matamata';
 import { Corrida } from './corrida';
 import { Truco, VinteUm } from './cartas';
-import { darXpPresenca, moverMoedas, registrarPartida, skinPermitida } from './perfis';
-import { ALCANCE_CARRO, ALCANCE_MESA, Anim, CARROS, DOMO, MESAS, type TipoMesa, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, SKIN_VALIDA, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
+import { Poker, Roleta, girarSlot } from './cassino';
+import { darXpPresenca, moverMoedas, registrarPartida, saldoMoedas, skinPermitida } from './perfis';
+import { ALCANCE_CARRO, ALCANCE_MESA, ALCANCE_ROLETA, ALCANCE_SLOT, APOSTAS_SLOT, Anim, ROLETA, SLOTS, premioSlot, CARROS, DOMO, MESAS, type TipoMesa, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, SKIN_VALIDA, type MsgCliente, type MsgServidor, type Pose, RAIO_PORTAL, dentroDoPredio, posInicialPraca, predioDoJogo, VISAO_BUSCADOR } from './protocolo';
 import { Retro } from './retro';
 
 interface Carro {
@@ -72,6 +73,9 @@ export class Sala extends DurableObject<Env> {
   private bj: VinteUm | null = null;
   private truco: Truco | null = null;
   private trucoPago = false;
+  private poker: Poker | null = null;
+  private roleta: Roleta | null = null;
+  private ultimoSlot = new Map<string, number>();
   private relogioMesas: ReturnType<typeof setTimeout> | null = null;
   private carros: Carro[] = CARROS.map((c) => ({ x: c.x, z: c.z, rot: c.rot, motorista: null, passageiros: [] }));
 
@@ -160,6 +164,8 @@ export class Sala extends DurableObject<Env> {
     if (this.mm) servidor.send(JSON.stringify({ k: 'mm', e: this.mm.estado(Date.now()) } satisfies MsgServidor));
     if (this.corrida) servidor.send(JSON.stringify({ k: 'corrida', e: this.corrida.estado(Date.now()) } satisfies MsgServidor));
     if (this.bj) servidor.send(JSON.stringify({ k: 'bj', e: this.bj.estado(Date.now()) } satisfies MsgServidor));
+    if (this.poker) servidor.send(JSON.stringify({ k: 'poker', e: this.poker.estado(Date.now()) } satisfies MsgServidor));
+    if (this.roleta) servidor.send(JSON.stringify({ k: 'roleta', e: this.roleta.estado(Date.now()) } satisfies MsgServidor));
     if (this.truco) {
       servidor.send(JSON.stringify({ k: 'truco', e: this.truco.estado(Date.now()) } satisfies MsgServidor));
       const mao = this.truco.maoDe(id);
@@ -214,7 +220,7 @@ export class Sala extends DurableObject<Env> {
       this.paraTodos({ k: 'skin', id: j.id, s }, ws);
     } else if (this.mm?.jogadores.has(j.id) && (m.k === 'comprar' || m.k === 'empunhar' || m.k === 'recarregar' || m.k === 'tiro')) {
       this.acaoMM(j, m);
-    } else if (m.k === 'mesa' || m.k === 'bj' || m.k === 'truco') {
+    } else if (m.k === 'mesa' || m.k === 'bj' || m.k === 'truco' || m.k === 'poker' || m.k === 'roleta' || m.k === 'slot') {
       await this.acaoMesa(ws, j, m);
     } else if (m.k === 'iniciar') {
       this.iniciar(j.id, m.jogo);
@@ -228,7 +234,7 @@ export class Sala extends DurableObject<Env> {
       let mudou = false;
       if (m.k === 'placa') mudou = r.levantar(j.id, m.t);
       else if (m.k === 'voto') mudou = typeof m.r === 'string' && r.votar(j.id, m.r);
-      else if (m.a === 'pronto') mudou = r.pronto(j.id, Math.hypot(j.pose[0], j.pose[2]) <= RAIO_CENTRO_RETRO);
+      else if (m.a === 'pronto') mudou = r.pronto(j.id, dentroDoPredio(predioDoJogo('sprint-retro')!, j.pose[0], j.pose[2]));
       else if (m.a === 'baixar') mudou = r.baixar(j.id);
       else if (m.a === 'passar') mudou = r.passar(j.id);
       else if (m.a === 'avancar') mudou = r.avancar(j.id);
@@ -250,18 +256,21 @@ export class Sala extends DurableObject<Env> {
     }
   };
 
-  private erroMesa(ws: WebSocket, mesa: TipoMesa, texto: string | null | false): void {
+  private erroMesa(ws: WebSocket, mesa: TipoMesa | 'roleta' | 'slot', texto: string | null | false): void {
     if (texto) ws.send(JSON.stringify({ k: 'mesaErro', mesa, texto } satisfies MsgServidor));
   }
 
   private async acaoMesa(ws: WebSocket, j: Anexo, m: MsgCliente): Promise<void> {
     const agora = Date.now();
     if (m.k === 'mesa') {
-      const tipo = m.mesa === 'truco' ? 'truco' : '21';
+      const tipo: TipoMesa = m.mesa === 'truco' || m.mesa === 'poker' ? m.mesa : '21';
       if (m.a === 'sentar') {
         const [mx, mz] = MESAS[tipo];
         if (Math.hypot(j.pose[0] - mx, j.pose[2] - mz) > ALCANCE_MESA) return this.erroMesa(ws, tipo, 'Chegue perto da mesa para sentar.');
-        if (tipo === '21') {
+        if (tipo === 'poker') {
+          this.poker ??= new Poker();
+          if (!this.poker.sentar(j.id, agora)) return this.erroMesa(ws, tipo, 'A mesa de poker está cheia.');
+        } else if (tipo === '21') {
           this.bj ??= new VinteUm(agora);
           if (!this.bj.sentar(j.id)) return this.erroMesa(ws, tipo, 'A mesa está cheia.');
         } else {
@@ -284,12 +293,44 @@ export class Sala extends DurableObject<Env> {
       else if (m.a === 'trucar') erro = this.truco.trucar(j.id, agora);
       else erro = this.truco.responder(j.id, m.a === 'aceitar', agora);
       this.erroMesa(ws, 'truco', erro);
+    } else if (m.k === 'poker' && this.poker) {
+      this.erroMesa(ws, 'poker', this.poker.acao(j.id, m.a, 'v' in m ? m.v : 0, agora));
+      await this.pagarPoker();
+    } else if (m.k === 'roleta') {
+      if (Math.hypot(j.pose[0] - ROLETA[0], j.pose[2] - ROLETA[1]) > ALCANCE_ROLETA) return this.erroMesa(ws, 'roleta', 'Chegue perto da roleta para apostar.');
+      this.roleta ??= new Roleta();
+      this.erroMesa(ws, 'roleta', await this.roleta.apostar(j.id, m.tipo, m.alvo, m.v, agora, this.moedas));
+    } else if (m.k === 'slot') {
+      await this.girarSlot(ws, j, m.v, agora);
+      return;
     }
     this.enviarMesas();
     this.armarRelogioMesas();
   }
 
+  /** Caça-níquel: só para quem girou (perto de uma máquina, no máximo um giro a cada 1,2 s). */
+  private async girarSlot(ws: WebSocket, j: Anexo, v: unknown, agora: number): Promise<void> {
+    if (!SLOTS.some(([x, z]) => Math.hypot(j.pose[0] - x, j.pose[2] - z) <= ALCANCE_SLOT)) return this.erroMesa(ws, 'slot', 'Chegue perto de uma máquina.');
+    const aposta = Number(v);
+    if (!(APOSTAS_SLOT as readonly number[]).includes(aposta)) return this.erroMesa(ws, 'slot', 'Aposta inválida.');
+    if (agora - (this.ultimoSlot.get(j.id) ?? 0) < 1200) return;
+    this.ultimoSlot.set(j.id, agora);
+    if (!(await this.moedas(j.id, -aposta, 'aposta:slot'))) return this.erroMesa(ws, 'slot', 'Moedas insuficientes.');
+    const rolos = girarSlot();
+    const ganho = premioSlot(rolos) * aposta;
+    if (ganho > 0) await this.moedas(j.id, ganho, 'premio:slot');
+    ws.send(JSON.stringify({ k: 'slot', rolos, aposta, ganho } satisfies MsgServidor));
+  }
+
+  /** Credita o que o poker tem para devolver (sobras, prêmios, quem levantou). */
+  private async pagarPoker(): Promise<void> {
+    if (!this.poker) return;
+    const l = this.poker.pagamentos.splice(0);
+    for (const [id, v, motivo] of l) await this.moedas(id, v, motivo);
+  }
+
   private levantarDasMesas(id: string, so?: TipoMesa): void {
+    if ((!so || so === 'poker') && this.poker?.levantar(id)) void this.pagarPoker();
     if ((!so || so === '21') && this.bj) this.bj.levantar(id);
     if ((!so || so === 'truco') && this.truco && this.truco.levantar(id) === 'abandonou') void this.pagarTruco();
     this.enviarMesas();
@@ -306,8 +347,21 @@ export class Sala extends DurableObject<Env> {
     const agora = Date.now();
     if (this.bj?.vazia) this.bj = null;
     if (this.truco?.vazia) this.truco = null;
+    if (this.poker?.vazia && !this.poker.pagamentos.length) this.poker = null;
+    if (this.roleta?.parada) this.roleta = null;
     this.paraTodos({ k: 'bj', e: this.bj?.estado(agora) ?? null });
     this.paraTodos({ k: 'truco', e: this.truco?.estado(agora) ?? null });
+    this.paraTodos({ k: 'poker', e: this.poker?.estado(agora) ?? null });
+    this.paraTodos({ k: 'roleta', e: this.roleta?.estado(agora) ?? null });
+    if (this.poker)
+      for (const [ws, j] of this.jogadores) {
+        if (!this.poker.lugares.includes(j.id)) continue;
+        try {
+          ws.send(JSON.stringify({ k: 'pokerMao', cartas: this.poker.maoDe(j.id) } satisfies MsgServidor));
+        } catch {
+          /* caindo */
+        }
+      }
     if (this.truco)
       for (const [ws, j] of this.jogadores) {
         if (!this.truco.lugares.includes(j.id)) continue;
@@ -321,12 +375,20 @@ export class Sala extends DurableObject<Env> {
 
   /** Relógio das mesas: um setTimeout novo a cada volta (cada um segura a sala em memória por até 15 min). */
   private armarRelogioMesas(): void {
-    if (this.relogioMesas || (!this.bj && !this.truco)) return;
+    if (this.relogioMesas || (!this.bj && !this.truco && !this.poker && !this.roleta)) return;
     this.relogioMesas = setTimeout(async () => {
       this.relogioMesas = null;
       const agora = Date.now();
       let mudou = false;
       if (this.bj) mudou = (await this.bj.tick(agora, this.moedas)) || mudou;
+      if (this.roleta) mudou = (await this.roleta.tick(agora, this.moedas)) || mudou;
+      if (this.poker) {
+        if (this.poker.podeComecar(agora)) {
+          await this.poker.comecarMao(agora, (id) => saldoMoedas(this.env.DB, id).catch(() => 0), this.moedas);
+          mudou = true;
+        } else mudou = this.poker.tick(agora) || mudou;
+        await this.pagarPoker();
+      }
       if (this.truco) {
         mudou = this.truco.tick(agora) || mudou;
         if (this.truco.fase === 'fim' && !this.trucoPago) {
@@ -530,7 +592,9 @@ export class Sala extends DurableObject<Env> {
     if (this.partida || this.retro || this.mm || this.corrida) return f;
     for (const jogo of IDS_JOGOS) {
       const [px, pz] = JOGOS[jogo].portal;
-      const ids = [...this.jogadores.values()].filter((j) => Math.hypot(j.pose[0] - px, j.pose[2] - pz) <= RAIO_PORTAL && j.pose[1] < 2).map((j) => j.id);
+      // Sprint Retro: a "fila" é quem está dentro da sala (para começar, tem que estar todo mundo).
+      const sala = jogo === 'sprint-retro' ? predioDoJogo(jogo) : undefined;
+      const ids = [...this.jogadores.values()].filter((j) => (sala ? dentroDoPredio(sala, j.pose[0], j.pose[2]) : Math.hypot(j.pose[0] - px, j.pose[2] - pz) <= RAIO_PORTAL && j.pose[1] < 2)).map((j) => j.id);
       if (ids.length) f[jogo] = ids;
     }
     return f;
@@ -580,8 +644,9 @@ export class Sala extends DurableObject<Env> {
       this.relogioMM = setInterval(() => this.tickMM(), 250);
       return;
     }
-    // Sprint Retro: participa a sala inteira (não só quem está no portal).
+    // Sprint Retro: participa a sala inteira, e só começa com todo mundo dentro da Sala Sprint Retro.
     if (jogo === 'sprint-retro') {
+      if (fila.length < this.jogadores.size) return;
       this.retro = new Retro(
         [...this.jogadores.values()].map((j) => ({ id: j.id, nome: j.nome })),
         quem,
@@ -600,6 +665,15 @@ export class Sala extends DurableObject<Env> {
       }
     this.partida = new Partida(jogo, fila, agora, Number(this.env.DURACAO_FATOR || 1));
     this.filas = '';
+    // A partida é na praça: cada um vai para um lugar em volta do chafariz (o jogo faz o mesmo no aparelho).
+    const lugares = this.partida.participantes;
+    for (const [ws, j] of this.jogadores) {
+      const i = lugares.indexOf(j.id);
+      if (i < 0) continue;
+      const [x, z] = posInicialPraca(i);
+      j.pose = [x, 0, z, Math.atan2(-x, -z), Anim.Parado];
+      ws.serializeAttachment(j);
+    }
     this.ultimoEstado = agora;
     this.paraTodos({ k: 'partida', p: this.partida.estado(agora) });
     this.avisarDiretorio(); // fecha a sala no "Jogar"
@@ -666,7 +740,7 @@ export class Sala extends DurableObject<Env> {
     this.paraTodos({ k: 'saiu', id: j.id });
     this.avisarDiretorio();
     // Saiu da sala: levanta das mesas de cartas.
-    if (this.bj || this.truco) this.levantarDasMesas(j.id);
+    if (this.bj || this.truco || this.poker) this.levantarDasMesas(j.id);
     // Saiu no meio da corrida: sai da classificação; se não sobrou ninguém, acaba sem resultado.
     if (this.corrida?.sair(j.id)) void this.terminarCorrida(false);
     // Saiu no meio do mata-mata: se um time ficou vazio, o outro vence.

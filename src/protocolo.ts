@@ -195,17 +195,58 @@ export interface InfoJogo {
   descricao: string;
   min: number; // jogadores para começar
   segundos: number; // duração da partida (no esconde-esconde, depois do tempo para esconder)
-  portal: [number, number]; // centro do portal na praça (x, z)
+  portal: [number, number]; // centro do portal (x, z), dentro do prédio do jogo
 }
 
 export const JOGOS: Record<IdJogo, InfoJogo> = {
-  'pega-pega': { nome: 'Pega-pega', descricao: 'Quem está pegando passa ao encostar em alguém. Ganha quem ficar menos tempo pegando.', min: 2, segundos: 90, portal: [-13, -6] },
-  'rei-da-colina': { nome: 'Rei da colina', descricao: 'Fique no círculo em volta do chafariz. Ganha quem somar mais tempo lá dentro.', min: 2, segundos: 90, portal: [13, -6] },
-  'esconde-esconde': { nome: 'Esconde-esconde', descricao: 'Um procura com a lanterna, os outros se escondem. Encostou, achou.', min: 2, segundos: 100, portal: [0, 15] },
-  'mata-mata': { nome: 'Mata-mata (CS)', descricao: 'TR contra CT no domo, por rodadas, com compra de armas. Ganha o time que fizer 4 rodadas primeiro.', min: 2, segundos: 0, portal: [0, -14] },
-  corrida: { nome: 'Corrida', descricao: 'Todos largam juntos de carrinho no circuito do lado oeste da cidade. 3 voltas: quem cruzar primeiro vence.', min: 1, segundos: 0, portal: [8, 15] },
-  'sprint-retro': { nome: 'Sprint Retro', descricao: 'Retrospectiva de Halloween com a sala inteira: perguntas, placas na mão, votação e relatório.', min: 1, segundos: 0, portal: [-13, 6] },
+  'pega-pega': { nome: 'Pega-pega', descricao: 'Quem está pegando passa ao encostar em alguém. Ganha quem ficar menos tempo pegando. Ao começar, todos vão para a praça.', min: 2, segundos: 90, portal: [-28, 52] },
+  'rei-da-colina': { nome: 'Rei da colina', descricao: 'Fique no círculo em volta do chafariz. Ganha quem somar mais tempo lá dentro. Ao começar, todos vão para a praça.', min: 2, segundos: 90, portal: [28, 52] },
+  'esconde-esconde': { nome: 'Esconde-esconde', descricao: 'Um procura com a lanterna, os outros se escondem pela praça. Encostou, achou. Ao começar, todos vão para a praça.', min: 2, segundos: 100, portal: [52, -28] },
+  'mata-mata': { nome: 'Mata-mata (CS)', descricao: 'TR contra CT no domo, por rodadas, com compra de armas. Ganha o time que fizer 4 rodadas primeiro.', min: 2, segundos: 0, portal: [-28, -52] },
+  corrida: { nome: 'Corrida', descricao: 'Todos largam juntos de carrinho no circuito do lado oeste da cidade. 3 voltas: quem cruzar primeiro vence.', min: 1, segundos: 0, portal: [-52, -28] },
+  'sprint-retro': { nome: 'Sprint Retro', descricao: 'Retrospectiva com a sala inteira: perguntas, placas na mão, votação e relatório. Só começa com todo mundo aqui dentro.', min: 1, segundos: 0, portal: [52, 54] },
 };
+
+/**
+ * Prédios dos jogos, espalhados pela cidade (entre a rua de dentro e a de fora). Dá para entrar: paredes com
+ * uma porta virada para a avenida mais perto. Retângulo alinhado aos eixos: centro (x, z), largura em x, fundo em z.
+ */
+export interface Predio {
+  id: string;
+  nome: string;
+  icone: string;
+  cor: string;
+  x: number;
+  z: number;
+  larg: number;
+  prof: number;
+  porta: 'oeste' | 'leste' | 'norte' | 'sul'; // oeste = -x, leste = +x, norte = -z, sul = +z
+  jogo?: IdJogo;
+}
+
+export const PREDIOS: Predio[] = [
+  { id: 'cassino', nome: 'Cassino', icone: '🎰', cor: '#dc2626', x: 24, z: -52, larg: 28, prof: 16, porta: 'oeste' },
+  { id: 'arena', nome: 'Arena CS', icone: '🔫', cor: '#b91c1c', x: -24, z: -52, larg: 22, prof: 14, porta: 'leste', jogo: 'mata-mata' },
+  { id: 'autodromo', nome: 'Autódromo', icone: '🏁', cor: '#16a34a', x: -52, z: -24, larg: 14, prof: 22, porta: 'sul', jogo: 'corrida' },
+  { id: 'casa', nome: 'Casa assombrada', icone: '🙈', cor: '#8b5cf6', x: 52, z: -24, larg: 14, prof: 22, porta: 'sul', jogo: 'esconde-esconde' },
+  { id: 'ginasio', nome: 'Ginásio', icone: '🏃', cor: '#ef4444', x: -24, z: 52, larg: 22, prof: 14, porta: 'leste', jogo: 'pega-pega' },
+  { id: 'castelo', nome: 'Castelo', icone: '👑', cor: '#facc15', x: 24, z: 52, larg: 22, prof: 14, porta: 'oeste', jogo: 'rei-da-colina' },
+  // Sala da Sprint Retro: lá no canto, no fim da cidade.
+  { id: 'retro', nome: 'Sala Sprint Retro', icone: '🗂️', cor: '#f97316', x: 53, z: 53, larg: 16, prof: 16, porta: 'norte', jogo: 'sprint-retro' },
+];
+
+/** Está dentro do prédio (com uma folga para dentro das paredes)? */
+export function dentroDoPredio(p: Predio, x: number, z: number, folga = 0.3): boolean {
+  return Math.abs(x - p.x) <= p.larg / 2 - folga && Math.abs(z - p.z) <= p.prof / 2 - folga;
+}
+export const predioDoJogo = (jogo: IdJogo): Predio | undefined => PREDIOS.find((p) => p.jogo === jogo);
+
+/** Jogos que acontecem na praça: ao começar, cada participante vai para um lugar em volta do chafariz. */
+export const JOGOS_NA_PRACA: IdJogo[] = ['pega-pega', 'rei-da-colina', 'esconde-esconde'];
+export function posInicialPraca(i: number): [number, number] {
+  const a = (i / 12) * Math.PI * 2 + 0.2;
+  return [Math.sin(a) * 12, Math.cos(a) * 12];
+}
 
 /** Ficar dentro deste raio do portal = estar na fila do jogo. */
 export const RAIO_PORTAL = 2.2;
@@ -289,7 +330,7 @@ export const PERGUNTAS_RETRO = [
 ] as const;
 export const VOTOS_RETRO = 3; // votos de cada pessoa na votação
 export const TAMANHO_RESPOSTA = 60; // "em poucas palavras"
-export const RAIO_CENTRO_RETRO = 8; // para ficar "pronto", tem que estar perto do chafariz
+// Para ficar "pronto" na retro, tem que estar dentro da Sala Sprint Retro (PREDIOS, id "retro").
 
 /** "sair" liga/desliga o voto para encerrar a retro (todos os presentes = acaba sem pontos). */
 export type AcaoRetro = 'pronto' | 'baixar' | 'passar' | 'avancar' | 'terminarVoto' | 'sair';
@@ -566,12 +607,12 @@ export interface EstadoCorrida {
   totalCheckpoints: number;
 }
 
-/* ---------- Mesas de cartas: 21 (contra a casa) e truco paulista ---------- */
+/* ---------- Cassino: 21 (contra a casa), truco paulista, poker, roleta e caça-níqueis ---------- */
 
-export type TipoMesa = '21' | 'truco';
-/** Onde ficam as mesas na praça (x, z). Chegou perto, pode sentar. */
-export const MESAS: Record<TipoMesa, [number, number]> = { '21': [-19, 0], truco: [19, 1.5] };
-export const LUGARES_MESA: Record<TipoMesa, number> = { '21': 5, truco: 4 };
+export type TipoMesa = '21' | 'truco' | 'poker';
+/** Onde ficam as mesas, dentro do Cassino (x, z). Chegou perto, pode sentar. */
+export const MESAS: Record<TipoMesa, [number, number]> = { '21': [17, -47.5], truco: [17, -56.5], poker: [26.5, -47.5] };
+export const LUGARES_MESA: Record<TipoMesa, number> = { '21': 5, truco: 4, poker: 6 };
 export const ALCANCE_MESA = 4;
 
 /** Carta em texto: valor + naipe, ex. "A♠", "7♥", "10♦". */
@@ -620,8 +661,105 @@ export interface EstadoTruco {
   restanteMs: number;
 }
 
+/* Poker (Texas Hold'em). A cada mão, quem está sentado entra com o saldo até o limite (sai da conta na hora);
+   no fim da mão volta o que sobrou mais o que ganhou. */
+export const BLINDS_POKER: [number, number] = [5, 10];
+export const LIMITE_POKER = 1000; // máximo que cada um põe numa mão
+export const SEGUNDOS_ENTRE_MAOS = 6;
+
+export interface JogadorPoker {
+  pilha: number; // fichas que ainda tem nesta mão
+  aposta: number; // quanto já pôs nesta rodada de apostas
+  total: number; // quanto já pôs na mão inteira
+  status: 'ativo' | 'desistiu' | 'allin' | 'fora'; // fora = sentado esperando a próxima mão
+  acao?: string; // última ação, para mostrar ("pagou 20", "aumentou para 60"...)
+  cartas?: Carta[]; // só na mostra (fim da mão)
+  jogo?: string; // nome da mão na mostra: "Dois pares", "Flush"...
+  ganho?: number; // no fim da mão
+}
+
+export interface EstadoPoker {
+  fase: 'esperando' | 'preflop' | 'flop' | 'turn' | 'river' | 'fim';
+  lugares: (string | null)[];
+  jogadores: Record<string, JogadorPoker>;
+  mesa: Carta[];
+  pote: number;
+  dealer: number;
+  vez: number | null; // lugar que joga
+  maiorAposta: number;
+  minimoAumento: number;
+  restanteMs: number;
+}
+
+/* Roleta europeia (0 a 36). */
+export const ROLETA: [number, number] = [26.5, -56.5];
+export const ALCANCE_ROLETA = 4;
+export const APOSTA_MIN_ROLETA = 10;
+export const APOSTA_MAX_ROLETA = 500;
+export const MAX_APOSTAS_ROLETA = 10; // por pessoa, por rodada
+export const SEGUNDOS_APOSTAS_ROLETA = 20; // contados a partir da primeira aposta
+export const SEGUNDOS_GIRO_ROLETA = 5;
+export const SEGUNDOS_RESULTADO_ROLETA = 6;
+export const VERMELHOS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
+export type TipoApostaRoleta = 'numero' | 'vermelho' | 'preto' | 'par' | 'impar' | 'baixo' | 'alto' | 'duzia';
+/** Quanto volta (aposta incluída) quando acerta. */
+export const PAGA_ROLETA: Record<TipoApostaRoleta, number> = { numero: 36, vermelho: 2, preto: 2, par: 2, impar: 2, baixo: 2, alto: 2, duzia: 3 };
+
+export function ganhouRoleta(tipo: TipoApostaRoleta, alvo: number | undefined, n: number): boolean {
+  if (tipo === 'numero') return alvo === n;
+  if (n === 0) return false;
+  if (tipo === 'vermelho') return VERMELHOS.includes(n);
+  if (tipo === 'preto') return !VERMELHOS.includes(n);
+  if (tipo === 'par') return n % 2 === 0;
+  if (tipo === 'impar') return n % 2 === 1;
+  if (tipo === 'baixo') return n <= 18;
+  if (tipo === 'alto') return n >= 19;
+  return Math.ceil(n / 12) === alvo; // dúzia 1, 2 ou 3
+}
+
+export interface ApostaRoleta {
+  id: string;
+  tipo: TipoApostaRoleta;
+  alvo?: number;
+  v: number;
+  ganho?: number; // no resultado
+}
+
+export interface EstadoRoleta {
+  fase: 'apostas' | 'girando' | 'resultado';
+  apostas: ApostaRoleta[];
+  numero: number | null; // só no resultado
+  historico: number[]; // últimos números (mais novo primeiro)
+  restanteMs: number | null; // null = esperando a primeira aposta
+}
+
+/* Caça-níqueis: 3 rolos. */
+export const SLOTS: [number, number][] = [
+  [37, -57.5],
+  [37, -55],
+  [37, -52.5],
+  [37, -50],
+  [37, -47.5],
+];
+export const ALCANCE_SLOT = 2.2;
+export const APOSTAS_SLOT = [10, 25, 50, 100] as const;
+export const SIMBOLOS_SLOT = ['🍒', '🍋', '🔔', '⭐', '💎', '7️⃣'] as const;
+/** Chance de cada símbolo em cada rolo (soma 100). */
+export const PESOS_SLOT = [30, 25, 18, 13, 9, 5];
+/** Três iguais: quanto volta (vezes a aposta). Dois 🍒 devolvem a aposta. Retorno médio ~95%. */
+export const PREMIOS_SLOT = [8, 12, 25, 50, 100, 250];
+
+export function premioSlot(rolos: number[]): number {
+  if (rolos[0] === rolos[1] && rolos[1] === rolos[2]) return PREMIOS_SLOT[rolos[0]];
+  return rolos.filter((r) => r === 0).length === 2 ? 1 : 0;
+}
+
 export type MsgClienteCartas =
   | { k: 'mesa'; mesa: TipoMesa; a: 'sentar' | 'levantar' | 'comecar'; aposta?: number }
+  | { k: 'poker'; a: 'desistir' | 'passar' | 'pagar' | 'allin' }
+  | { k: 'poker'; a: 'aumentar'; v: number }
+  | { k: 'roleta'; tipo: TipoApostaRoleta; alvo?: number; v: number }
+  | { k: 'slot'; v: number }
   | { k: 'bj'; a: 'apostar'; v: number }
   | { k: 'bj'; a: 'pedir' | 'parar' | 'dobrar' }
   | { k: 'truco'; a: 'jogar'; i: number; encoberta?: boolean }
@@ -632,4 +770,10 @@ export type MsgServidorCartas =
   | { k: 'truco'; e: EstadoTruco | null }
   /** Só para você: as suas cartas do truco. */
   | { k: 'trucoMao'; cartas: Carta[] }
-  | { k: 'mesaErro'; mesa: TipoMesa; texto: string };
+  | { k: 'poker'; e: EstadoPoker | null }
+  /** Só para você: as suas duas cartas do poker. */
+  | { k: 'pokerMao'; cartas: Carta[] }
+  | { k: 'roleta'; e: EstadoRoleta | null }
+  /** Só para quem girou: resultado do caça-níquel (índices em SIMBOLOS_SLOT). */
+  | { k: 'slot'; rolos: number[]; aposta: number; ganho: number }
+  | { k: 'mesaErro'; mesa: TipoMesa | 'roleta' | 'slot'; texto: string };

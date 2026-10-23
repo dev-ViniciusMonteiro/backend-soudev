@@ -117,30 +117,36 @@ async function pessoa(nome, codigo) {
   const a = await pessoa('Review A', codigo);
   const b = await pessoa('Review B', codigo);
   const c = await pessoa('Review C', codigo);
-  await a.ir(-13, 6); // portal do Sprint Retro
+  // Sala Sprint Retro: prédio no canto da cidade (centro 53, 53; 16 x 16).
+  await a.ir(52, 54);
+  await b.ir(55, 52);
+  await esperar(250);
+  await a.mandar({ k: 'iniciar', jogo: 'sprint-retro' });
+  ok(!c.ultimo('retro')?.r, 'Sprint Retro não começa se alguém da sala está fora da Sala Sprint Retro');
+  await c.ir(50, 50);
   await esperar(250);
   await a.mandar({ k: 'iniciar', jogo: 'sprint-retro' });
   const r0 = c.ultimo('retro')?.r;
-  ok(r0?.fase === 'reuniao' && r0.participantes.length === 3 && r0.anfitriao === a.id, 'Iniciar no portal: a sala inteira entra na retro (reunião), quem iniciou conduz');
+  ok(r0?.fase === 'reuniao' && r0.participantes.length === 3 && r0.anfitriao === a.id, 'Todos dentro da sala: a retro começa (reunião), quem iniciou conduz');
 
   const d = await pessoa('Review D', codigo).catch(() => null);
   await esperar(250);
   ok(d?.ultimo('erro')?.motivo === 'fechada', 'Durante o Sprint Retro a sala fecha para gente nova');
   ok((await api('/jogar', { metodo: 'POST' })).d.codigo !== codigo, 'E sai do "Jogar"');
 
-  await a.ir(0, 5);
+  await b.ir(0, 5); // B saiu da sala
   await esperar(150);
   await a.mandar({ k: 'retro', a: 'pronto' });
-  await b.mandar({ k: 'retro', a: 'pronto' }); // B ainda está longe do centro
+  await b.mandar({ k: 'retro', a: 'pronto' });
   let r = a.ultimo('retro').r;
-  ok(r.prontos.length === 1 && r.prontos[0] === a.id, '"Pronto" só vale no centro (perto do chafariz)');
-  await b.ir(3, 3);
-  await c.ir(-3, 4);
+  ok(r.prontos.length === 1 && r.prontos[0] === a.id, '"Pronto" só vale dentro da Sala Sprint Retro');
+  await b.ir(55, 55);
+  await c.ir(51, 56);
   await esperar(150);
   await b.mandar({ k: 'retro', a: 'pronto' });
   await c.mandar({ k: 'retro', a: 'pronto' });
   r = a.ultimo('retro').r;
-  ok(r.fase === 'pergunta' && r.pergunta === 0 && Object.values(r.status).every((s) => s === 'pensando'), 'Todos prontos no centro: começa a 1ª pergunta (Doçuras)');
+  ok(r.fase === 'pergunta' && r.pergunta === 0 && Object.values(r.status).every((s) => s === 'pensando'), 'Todos prontos na sala: começa a 1ª pergunta (Doçuras)');
 
   await a.mandar({ k: 'placa', t: 'Time <b>unido</b>' });
   r = b.ultimo('retro').r;
@@ -209,11 +215,10 @@ async function pessoa(nome, codigo) {
   const a = await pessoa('Retro A', codigo);
   let b = await pessoa('Retro B', codigo);
   const c = await pessoa('Retro C', codigo);
-  await a.ir(-13, 6);
+  for (const [p, dx] of [[a, 0], [b, 2], [c, -2]]) await p.ir(53 + dx, 53);
   await esperar(250);
   await a.mandar({ k: 'iniciar', jogo: 'sprint-retro' });
   for (const p of [a, b, c]) {
-    await p.ir(1, 4);
     await esperar(80);
     await p.mandar({ k: 'retro', a: 'pronto' });
   }

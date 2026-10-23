@@ -9,7 +9,7 @@ export type Moedas = (id: string, valor: number, motivo: string) => Promise<bool
 const NAIPES = ['♣', '♥', '♠', '♦'];
 
 /** Embaralha com números aleatórios seguros (Fisher-Yates). */
-function embaralhar<T>(l: T[]): T[] {
+export function embaralhar<T>(l: T[]): T[] {
   const r = new Uint32Array(l.length);
   crypto.getRandomValues(r);
   for (let i = l.length - 1; i > 0; i--) {
@@ -18,6 +18,9 @@ function embaralhar<T>(l: T[]): T[] {
   }
   return l;
 }
+
+/** Baralho completo de 52 cartas (sem embaralhar). */
+export const baralho52 = (): Carta[] => NAIPES.flatMap((n) => ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'].map((v) => v + n));
 
 const valorDe = (c: Carta): string => c.slice(0, -1);
 const naipeDe = (c: Carta): string => c.slice(-1);
@@ -100,7 +103,7 @@ export class VinteUm {
 
   private distribuir(agora: number): void {
     // Baralho novo de 52 cartas a cada rodada.
-    this.baralho = embaralhar(NAIPES.flatMap((n) => ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'].map((v) => v + n)));
+    this.baralho = embaralhar(baralho52());
     this.casa = [this.comprar(), this.comprar()];
     for (const id of this.lugares) {
       const m = id && this.maos.get(id);

@@ -4,7 +4,7 @@
 const BASE = process.env.BASE ?? 'http://localhost:8787';
 const ORIGEM = 'http://localhost:5173';
 const WS = BASE.replace(/^http/, 'ws');
-const PORTAIS = { 'pega-pega': [-13, -6], 'rei-da-colina': [13, -6], 'esconde-esconde': [0, 15] };
+const PORTAIS = { 'pega-pega': [-28, 52], 'rei-da-colina': [28, 52], 'esconde-esconde': [52, -28] };
 
 let falhas = 0;
 const ok = (cond, texto) => {

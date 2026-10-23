@@ -1,10 +1,10 @@
-// Teste das mesas de cartas (21 e truco paulista) contra o servidor local.
+// Teste das mesas de cartas do Cassino (21 e truco paulista) contra o servidor local.
 
 const BASE = process.env.BASE ?? 'http://localhost:8787';
 const ORIGEM = 'http://localhost:5173';
 const WS = BASE.replace(/^http/, 'ws');
-const MESA_21 = [-19, 0];
-const MESA_TRUCO = [19, 1.5];
+const MESA_21 = [17, -47.5];
+const MESA_TRUCO = [17, -56.5];
 
 let falhas = 0;
 const ok = (cond, texto) => {
