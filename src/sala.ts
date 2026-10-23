@@ -6,6 +6,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { Partida } from './jogos';
 import { MataMata, type PosMM } from './matamata';
+import { Corrida } from './corrida';
 import { darXpPresenca, registrarPartida, skinPermitida } from './perfis';
 import { ALCANCE_CARRO, Anim, CARROS, DOMO, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, SKIN_VALIDA, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
 import { Retro } from './retro';
@@ -64,6 +65,9 @@ export class Sala extends DurableObject<Env> {
   private mm: MataMata | null = null;
   private relogioMM: ReturnType<typeof setInterval> | null = null;
   private ultimoEstadoMM = 0;
+  private corrida: Corrida | null = null;
+  private relogioCorrida: ReturnType<typeof setInterval> | null = null;
+  private ultimoEstadoCorrida = 0;
   private carros: Carro[] = CARROS.map((c) => ({ x: c.x, z: c.z, rot: c.rot, motorista: null, passageiros: [] }));
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -113,6 +117,7 @@ export class Sala extends DurableObject<Env> {
     if (this.partida && !this.partida.participantes.includes(id)) return recusar('fechada');
     if (this.retro && !this.retro.participantes.includes(id)) return recusar('fechada');
     if (this.mm && !this.mm.jogadores.has(id)) return recusar('fechada');
+    if (this.corrida && !this.corrida.corredores.has(id)) return recusar('fechada');
 
     // A mesma pessoa abrindo de novo (outra aba, reconexão): a conexão antiga sai.
     for (const [ws, j] of this.jogadores) {
@@ -148,6 +153,7 @@ export class Sala extends DurableObject<Env> {
     else if (this.retro) servidor.send(JSON.stringify({ k: 'retro', r: this.retro.estado() } satisfies MsgServidor));
     servidor.send(JSON.stringify({ k: 'carros', l: this.estadoCarros() } satisfies MsgServidor));
     if (this.mm) servidor.send(JSON.stringify({ k: 'mm', e: this.mm.estado(Date.now()) } satisfies MsgServidor));
+    if (this.corrida) servidor.send(JSON.stringify({ k: 'corrida', e: this.corrida.estado(Date.now()) } satisfies MsgServidor));
     this.paraTodos({ k: 'entrou', j: publico(j) }, servidor);
     this.avisarDiretorio();
     return new Response(null, { status: 101, webSocket: cliente });
@@ -180,6 +186,7 @@ export class Sala extends DurableObject<Env> {
       }
       this.ultimaPose.set(ws, agora);
       j.pose = p;
+      if (this.corrida?.pose(j.id, p[0], p[2], agora)) this.enviarCorrida(agora);
       this.mexeram.add(ws);
       this.agendarEnvio();
     } else if (m.k === 'emote' && EMOTES.includes(m.e as Emote)) {
@@ -216,6 +223,47 @@ export class Sala extends DurableObject<Env> {
       else if (m.a === 'sair') mudou = r.votarSair(j.id);
       if (mudou) this.retroMudou();
     }
+  }
+
+  /* ---------- Corrida ---------- */
+
+  private enviarCorrida(agora: number): void {
+    if (!this.corrida) return;
+    this.ultimoEstadoCorrida = agora;
+    this.paraTodos({ k: 'corrida', e: this.corrida.estado(agora) });
+  }
+
+  private tickCorrida(): void {
+    const c = this.corrida;
+    if (!c) return;
+    const agora = Date.now();
+    const { mudou, acabou } = c.tick(agora);
+    if (acabou) {
+      void this.terminarCorrida(true);
+      return;
+    }
+    if (mudou || agora - this.ultimoEstadoCorrida >= 1000) this.enviarCorrida(agora);
+  }
+
+  private async terminarCorrida(comResultado: boolean): Promise<void> {
+    const c = this.corrida;
+    if (!c) return;
+    this.corrida = null;
+    if (this.relogioCorrida) clearInterval(this.relogioCorrida);
+    this.relogioCorrida = null;
+    this.paraTodos({ k: 'corrida', e: null });
+    this.avisarDiretorio();
+    this.atualizarFilas();
+    if (!comResultado || c.fase !== 'correndo') return;
+    const res = c.resultado();
+    const nomes = new Map([...this.jogadores.values()].map((j) => [j.id, j.nome]));
+    let conquistas: Record<string, string[]> = {};
+    try {
+      conquistas = await registrarPartida(this.env.DB, { jogo: 'corrida', sala: this.config?.codigo ?? '', inicio: c.inicio, fim: Date.now(), resultados: res });
+    } catch (e) {
+      console.error('registrar corrida', e);
+    }
+    this.paraTodos({ k: 'resultado', jogo: 'corrida', l: res.map((x) => ({ ...x, nome: nomes.get(x.id) ?? '?' })), conquistas });
   }
 
   /* ---------- Mata-mata ---------- */
@@ -364,7 +412,7 @@ export class Sala extends DurableObject<Env> {
   /** Quem está dentro de cada portal (só fora de partida). */
   private calcularFilas(): Partial<Record<IdJogo, string[]>> {
     const f: Partial<Record<IdJogo, string[]>> = {};
-    if (this.partida || this.retro || this.mm) return f;
+    if (this.partida || this.retro || this.mm || this.corrida) return f;
     for (const jogo of IDS_JOGOS) {
       const [px, pz] = JOGOS[jogo].portal;
       const ids = [...this.jogadores.values()].filter((j) => Math.hypot(j.pose[0] - px, j.pose[2] - pz) <= RAIO_PORTAL && j.pose[1] < 2).map((j) => j.id);
@@ -383,9 +431,24 @@ export class Sala extends DurableObject<Env> {
   }
 
   private iniciar(quem: string, jogo: IdJogo): void {
-    if (this.partida || this.retro || this.mm || !JOGOS[jogo]) return;
+    if (this.partida || this.retro || this.mm || this.corrida || !JOGOS[jogo]) return;
     const fila = this.calcularFilas()[jogo] ?? [];
     if (!fila.includes(quem) || fila.length < JOGOS[jogo].min) return;
+    // Corrida: quem estava no portal vai para o grid de largada (desce dos carros da cidade), o resto assiste.
+    if (jogo === 'corrida') {
+      for (const [ws, j] of this.jogadores)
+        if (fila.includes(j.id) && j.carro !== undefined) {
+          this.sairDoCarro(j);
+          ws.serializeAttachment(j);
+        }
+      const agora = Date.now();
+      this.corrida = new Corrida(fila.slice(0, 8), agora, Number(this.env.DURACAO_FATOR || 1));
+      this.filas = '';
+      this.enviarCorrida(agora);
+      this.avisarDiretorio();
+      this.relogioCorrida = setInterval(() => this.tickCorrida(), 250);
+      return;
+    }
     // Mata-mata: quem estava no portal vai para o domo (times alternados), o resto assiste.
     if (jogo === 'mata-mata') {
       for (const [ws, j] of this.jogadores)
@@ -487,6 +550,8 @@ export class Sala extends DurableObject<Env> {
     this.mexeram.delete(ws);
     this.paraTodos({ k: 'saiu', id: j.id });
     this.avisarDiretorio();
+    // Saiu no meio da corrida: sai da classificação; se não sobrou ninguém, acaba sem resultado.
+    if (this.corrida?.sair(j.id)) void this.terminarCorrida(false);
     // Saiu no meio do mata-mata: se um time ficou vazio, o outro vence.
     if (this.mm?.sair(j.id)) void this.terminarMM(this.mm.jogadores.size > 0);
     // Estava dirigindo: o carro fica parado onde parou.
@@ -555,6 +620,6 @@ export class Sala extends DurableObject<Env> {
     if (!this.config?.publica) return;
     const { codigo } = this.config;
     const n = this.jogadores.size;
-    this.ctx.waitUntil(this.env.DIRETORIO.getByName('global').atualizar(codigo, n, !this.partida && !this.retro && !this.mm));
+    this.ctx.waitUntil(this.env.DIRETORIO.getByName('global').atualizar(codigo, n, !this.partida && !this.retro && !this.mm && !this.corrida));
   }
 }

@@ -188,7 +188,7 @@ export interface RespostaRanking {
 
 /* ---------- Jogos da praça (portais) ---------- */
 
-export type IdJogo = 'pega-pega' | 'rei-da-colina' | 'esconde-esconde' | 'sprint-retro' | 'mata-mata';
+export type IdJogo = 'pega-pega' | 'rei-da-colina' | 'esconde-esconde' | 'sprint-retro' | 'mata-mata' | 'corrida';
 
 export interface InfoJogo {
   nome: string;
@@ -203,6 +203,7 @@ export const JOGOS: Record<IdJogo, InfoJogo> = {
   'rei-da-colina': { nome: 'Rei da colina', descricao: 'Fique no círculo em volta do chafariz. Ganha quem somar mais tempo lá dentro.', min: 2, segundos: 90, portal: [13, -6] },
   'esconde-esconde': { nome: 'Esconde-esconde', descricao: 'Um procura com a lanterna, os outros se escondem. Encostou, achou.', min: 2, segundos: 100, portal: [0, 15] },
   'mata-mata': { nome: 'Mata-mata (CS)', descricao: 'TR contra CT no domo, por rodadas, com compra de armas. Ganha o time que fizer 4 rodadas primeiro.', min: 2, segundos: 0, portal: [0, -14] },
+  corrida: { nome: 'Corrida', descricao: 'Todos largam juntos de carrinho no circuito do lado oeste da cidade. 3 voltas: quem cruzar primeiro vence.', min: 1, segundos: 0, portal: [8, 15] },
   'sprint-retro': { nome: 'Sprint Retro', descricao: 'Retrospectiva de Halloween com a sala inteira: perguntas, placas na mão, votação e relatório.', min: 1, segundos: 0, portal: [-13, 6] },
 };
 
@@ -257,7 +258,8 @@ export type MsgServidorJogo =
   | { k: 'resultado'; jogo: IdJogo; l: LinhaResultado[]; conquistas: Record<string, string[]> }
   | { k: 'carros'; l: EstadoCarro[] }
   | { k: 'retro'; r: EstadoRetro | null }
-  | MsgServidorMM;
+  | MsgServidorMM
+  | { k: 'corrida'; e: EstadoCorrida | null };
 
 /* ---------- Carros ---------- */
 
@@ -466,3 +468,98 @@ export type MsgServidorMM =
   | { k: 'tiro'; de: string; o: [number, number, number]; p: [number, number, number]; arma: string }
   | { k: 'dano'; de: string; para: string; hp: number; cabeca: boolean }
   | { k: 'abate'; de: string; para: string; arma: string; cabeca: boolean };
+
+/* ---------- Corrida de carrinhos (circuito do lado oeste) ---------- */
+
+/** Centro do circuito no mundo. Os pontos da pista são relativos a ele. */
+export const CIRCUITO: [number, number] = [-175, 0];
+export const LARGURA_PISTA = 14;
+export const VOLTAS = 3;
+export const SEGUNDOS_LARGADA = 5;
+/** Depois que o primeiro cruza a linha, os outros têm este tempo para terminar. */
+export const SEGUNDOS_PARA_TERMINAR = 45;
+/** Limite de tempo da corrida inteira. */
+export const SEGUNDOS_CORRIDA = 300;
+/** Velocidade máxima aceita entre duas posições (acima disso é teletransporte e não conta). */
+export const VELOCIDADE_MAX_CORRIDA = 40;
+export const RAIO_CHECKPOINT = 16;
+
+/** Pontos de controle do traçado (fechado), relativos ao CIRCUITO. A largada é no primeiro, indo para +x. */
+export const TRACADO: [number, number][] = [
+  [0, -60],
+  [40, -60],
+  [62, -52],
+  [72, -30],
+  [66, -6],
+  [50, 10],
+  [56, 32],
+  [46, 54],
+  [22, 62],
+  [0, 54],
+  [-18, 38],
+  [-38, 54],
+  [-62, 54],
+  [-72, 30],
+  [-64, 4],
+  [-72, -24],
+  [-58, -52],
+  [-30, -62],
+];
+
+/** Centro da pista amostrado a cada ~passo metros (Catmull-Rom fechado). Mesma conta no jogo e no servidor. */
+export function pontosPista(passo = 4): [number, number][] {
+  const n = TRACADO.length;
+  const saida: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = TRACADO[(i - 1 + n) % n];
+    const p1 = TRACADO[i];
+    const p2 = TRACADO[(i + 1) % n];
+    const p3 = TRACADO[(i + 2) % n];
+    const comp = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+    const k = Math.max(2, Math.ceil(comp / passo));
+    for (let j = 0; j < k; j++) {
+      const u = j / k;
+      const u2 = u * u;
+      const u3 = u2 * u;
+      const c = (a: number, b: number, cc: number, d: number) => 0.5 * (2 * b + (-a + cc) * u + (2 * a - 5 * b + 4 * cc - d) * u2 + (-a + 3 * b - 3 * cc + d) * u3);
+      saida.push([c(p0[0], p1[0], p2[0], p3[0]), c(p0[1], p1[1], p2[1], p3[1])]);
+    }
+  }
+  return saida;
+}
+
+/** Checkpoints: um a cada ~24 m do traçado (o último é a linha de chegada, no ponto 0). */
+export function checkpoints(): [number, number][] {
+  const p = pontosPista(4);
+  const cps: [number, number][] = [];
+  for (let i = 6; i < p.length; i += 6) cps.push(p[i]);
+  cps.push(p[0]);
+  return cps;
+}
+
+/** Lugares no grid de largada (atrás da linha, em duas filas). */
+export function gridLargada(n: number): [number, number, number][] {
+  const lugares: [number, number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const fila = Math.floor(i / 2);
+    const lado = i % 2 ? 3.2 : -3.2;
+    lugares.push([-6 - fila * 7, -60 + lado, Math.PI / 2]); // olhando para +x
+  }
+  return lugares;
+}
+
+export interface CorredorEstado {
+  volta: number; // voltas completas
+  cp: number; // próximo checkpoint
+  terminou: number | null; // tempo (ms) em que cruzou a chegada
+  posicao: number;
+  grid: [number, number, number];
+}
+
+export interface EstadoCorrida {
+  fase: 'largada' | 'correndo';
+  restanteMs: number; // largada: até a largada; correndo: até o fim
+  decorridoMs: number;
+  corredores: Record<string, CorredorEstado>;
+  totalCheckpoints: number;
+}
