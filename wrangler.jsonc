@@ -17,10 +17,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "SALA", "class_name": "Sala" },
-      { "name": "DIRETORIO", "class_name": "Diretorio" }
+      { "name": "DIRETORIO", "class_name": "Diretorio" },
+      { "name": "EMPRESA", "class_name": "EmpresaSx" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sala", "Diretorio"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Sala", "Diretorio"] },
+    { "tag": "v2", "new_sqlite_classes": ["EmpresaSx"] }
+  ],
   // Banco dos perfis, moedas, itens, conquistas, partidas e ranking. Tabelas em migrations/.
   "d1_databases": [{ "binding": "DB", "database_name": "soudev-jogos", "database_id": "809a2bf3-30d6-4a8c-95b3-28f5fb16c7ae", "migrations_dir": "migrations" }]
 }

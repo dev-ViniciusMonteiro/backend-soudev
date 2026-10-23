@@ -9,13 +9,17 @@
 //   POST  /jogar              → código de uma sala pública com vaga (ou nova)
 //   POST  /salas              → código de uma sala privada nova
 //   GET   /sala/:codigo       → WebSocket da sala (?token=)
+//   POST  /sistemas/conta     → contas, equipes e membros dos sistemas de gestão (ver sistemas/rotas.ts)
+//   POST  /sistemas/e/:equipe → sincronizar os dados de uma equipe e as páginas públicas dela
 
 import { Diretorio, novoCodigo } from './diretorio';
 import { ErroPerfil, atualizarPerfil, comprarItem, criarPerfil, perfilDoToken, ranking, registrarPartida, tokenDaRequisicao } from './perfis';
 import { CODIGO_SALA, type RespostaSala } from './protocolo';
 import { Sala } from './sala';
+import { EmpresaSx } from './sistemas/empresa';
+import { rotasSistemas } from './sistemas/rotas';
 
-export { Diretorio, Sala };
+export { Diretorio, EmpresaSx, Sala };
 
 function origemPermitida(req: Request, env: Env): string | null {
   const origem = req.headers.get('Origin');
@@ -55,6 +59,9 @@ async function rotas(req: Request, env: Env, url: URL, origem: string | null): P
 
   // Daqui para baixo, só o site e o jogo (evita robôs de outros sites criando perfis e salas).
   if (!origem && m !== 'GET') return json({ erro: 'origem não permitida' }, null, 403);
+
+  const sx = await rotasSistemas(req, env, caminho);
+  if (sx) return json(sx, origem);
 
   if (caminho === '/perfil') {
     if (m === 'POST') {
