@@ -81,11 +81,17 @@ export const XP_PRESENCA_DIA = 60;
 export const nivelDoXp = (xp: number): number => Math.floor(Math.sqrt(Math.max(0, xp) / 50)) + 1;
 export const xpDoNivel = (nivel: number): number => 50 * (nivel - 1) ** 2;
 
+export type CategoriaLoja = 'chapeu' | 'acessorio' | 'roupa' | 'pet' | 'arma';
+
 export interface Item {
   id: string; // a parte da skin que ele libera, ex.: "chapeu:coroa"
   nome: string;
   nivel?: number; // liberado ao chegar neste nível
   conquista?: string; // ou ao ganhar esta conquista
+  preco?: number; // ou comprado na loja com moedas do jogo
+  categoria?: CategoriaLoja;
+  icone?: string;
+  descricao?: string;
 }
 
 /** Tudo que não está aqui (cores, cabelo curto, careca) é livre desde o começo. */
@@ -96,8 +102,36 @@ export const ITENS: Item[] = [
   { id: 'chapeu:gorro', nome: 'Gorro', nivel: 4 },
   { id: 'oculos:1', nome: 'Óculos escuros', nivel: 5 },
   { id: 'chapeu:cartola', nome: 'Cartola', nivel: 8 },
-  { id: 'chapeu:coroa', nome: 'Coroa', conquista: 'rei-da-colina' },
+  { id: 'chapeu:coroa', nome: 'Coroa', conquista: 'rei-da-colina', preco: 2500, categoria: 'chapeu', icone: '👑', descricao: 'A coroa do rei da colina (ou compre direto).' },
+  // Loja: só moedas do jogo. Armas são só aparência (mesmo dano para todos no mata-mata).
+  { id: 'chapeu:coroa-ouro', nome: 'Coroa de ouro', preco: 1500, categoria: 'chapeu', icone: '👑', descricao: 'Brilha de longe.' },
+  { id: 'chapeu:coroa-diamante', nome: 'Coroa de diamante', preco: 5000, categoria: 'chapeu', icone: '💎', descricao: 'A mais rara da praça.' },
+  { id: 'chapeu:chifres', nome: 'Chifres', preco: 600, categoria: 'chapeu', icone: '😈', descricao: 'Para os dias de travessura.' },
+  { id: 'chapeu:aureola', nome: 'Auréola', preco: 800, categoria: 'chapeu', icone: '😇', descricao: 'Flutua sobre a cabeça.' },
+  { id: 'chapeu:tiara', nome: 'Tiara', preco: 400, categoria: 'chapeu', icone: '🎀' },
+  { id: 'acessorio:mochila', nome: 'Mochila', preco: 300, categoria: 'acessorio', icone: '🎒' },
+  { id: 'acessorio:capa', nome: 'Capa de herói', preco: 700, categoria: 'acessorio', icone: '🦸', descricao: 'Balança quando você corre.' },
+  { id: 'acessorio:guitarra', nome: 'Guitarra nas costas', preco: 900, categoria: 'acessorio', icone: '🎸' },
+  { id: 'acessorio:asas', nome: 'Asas', preco: 1200, categoria: 'acessorio', icone: '🪽', descricao: 'Batem quando você pula.' },
+  { id: 'roupa:jaqueta', nome: 'Jaqueta', preco: 400, categoria: 'roupa', icone: '🧥' },
+  { id: 'roupa:moletom', nome: 'Moletom com capuz', preco: 500, categoria: 'roupa', icone: '👕' },
+  { id: 'roupa:terno', nome: 'Terno e gravata', preco: 900, categoria: 'roupa', icone: '🤵' },
+  { id: 'roupa:esqueleto', nome: 'Fantasia de esqueleto', preco: 1000, categoria: 'roupa', icone: '💀' },
+  { id: 'pet:cachorro', nome: 'Cachorro', preco: 2000, categoria: 'pet', icone: '🐶', descricao: 'Segue você pela praça.' },
+  { id: 'pet:gato', nome: 'Gato', preco: 2000, categoria: 'pet', icone: '🐱', descricao: 'Segue você (quando quer).' },
+  { id: 'arma:camuflada', nome: 'Armas camufladas', preco: 500, categoria: 'arma', icone: '🪖', descricao: 'Visual das suas armas no mata-mata (mesmo dano).' },
+  { id: 'arma:neon', nome: 'Armas neon', preco: 1500, categoria: 'arma', icone: '🌈', descricao: 'Visual das suas armas no mata-mata (mesmo dano).' },
+  { id: 'arma:ouro', nome: 'Armas de ouro', preco: 3000, categoria: 'arma', icone: '🥇', descricao: 'Visual das suas armas no mata-mata (mesmo dano).' },
+  { id: 'arma:dragao', nome: 'Armas Dragão', preco: 6000, categoria: 'arma', icone: '🐉', descricao: 'Visual das suas armas no mata-mata (mesmo dano).' },
 ];
+
+/** Aparência em texto: até 300 caracteres (cores + chapéu + acessório + roupa + pet + arma). */
+export const SKIN_VALIDA = /^[\w:#|.,-]{0,300}$/;
+
+/** POST /loja/comprar { item } → perfil atualizado (moedas e itens). */
+export interface PedidoCompra {
+  item: string;
+}
 
 export interface Conquista {
   id: string;

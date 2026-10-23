@@ -51,6 +51,21 @@ ok((await api('/perfil', { token: 'f'.repeat(64) })).status === 401, 'Token erra
 ok((await api('/perfil', { metodo: 'PATCH', token: pa.token, dados: { skin: 'pele:2|chapeu:coroa' } })).status === 403, 'Trocar para item bloqueado (coroa) → 403');
 ok((await api('/perfil', { metodo: 'PATCH', token: pa.token, dados: { apelido: 'Teste Ana Clara' } })).d?.apelido === 'Teste Ana Clara', 'Trocar apelido');
 
+/* ---------- Loja ---------- */
+{
+  const comprador = await novoPerfil('Loja');
+  const comprar = (item) => api('/loja/comprar', { metodo: 'POST', token: comprador.token, dados: { item } });
+  ok((await comprar('chapeu:coroa-diamante')).status === 402, 'Loja: sem moedas suficientes (diamante custa 5000) → recusado');
+  const r = await comprar('acessorio:mochila');
+  ok(r.status === 200 && r.d.moedas === 700 && r.d.itens.includes('acessorio:mochila'), 'Loja: comprou a mochila por 300 (sobram 700)');
+  ok((await comprar('acessorio:mochila')).status === 409, 'Loja: não compra o mesmo item duas vezes');
+  ok((await comprar('chapeu:inventado')).status === 400 && (await comprar('cabelo:arrepiado')).status === 400, 'Loja: item inexistente ou que não está à venda → recusado');
+  ok((await api('/perfil', { metodo: 'PATCH', token: comprador.token, dados: { skin: 'pele:1|acessorio:mochila' } })).status === 200, 'Item comprado pode ser usado');
+  ok((await api('/perfil', { metodo: 'PATCH', token: comprador.token, dados: { skin: 'pele:1|pet:gato' } })).status === 403, 'Item da loja não comprado continua bloqueado');
+  const sem = await novoPerfil('Sem token');
+  ok((await api('/loja/comprar', { metodo: 'POST', dados: { item: 'acessorio:capa' } })).status === 401 && sem.perfil.moedas === 1000, 'Comprar sem perfil → 401');
+}
+
 /* ---------- Salas ---------- */
 // No publicado pode haver gente de verdade nas salas públicas: lá o teste usa só sala privada.
 const { codigo } = (await api(LOCAL ? '/jogar' : '/salas', { metodo: 'POST' })).d;

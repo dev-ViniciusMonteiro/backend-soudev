@@ -6,7 +6,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { Partida } from './jogos';
 import { darXpPresenca, registrarPartida, skinPermitida } from './perfis';
-import { ALCANCE_CARRO, Anim, CARROS, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
+import { ALCANCE_CARRO, Anim, CARROS, LUGARES_CARRO, EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type EstadoCarro, type IdJogo, type InfoSala, JOGOS, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, SKIN_VALIDA, type MsgCliente, type MsgServidor, type Pose, RAIO_CENTRO_RETRO, RAIO_PORTAL, VISAO_BUSCADOR } from './protocolo';
 import { Retro } from './retro';
 
 interface Carro {
@@ -20,7 +20,6 @@ interface Carro {
 const TICK_MS = 250; // regras dos jogos 4x por segundo
 const IDS_JOGOS = Object.keys(JOGOS) as IdJogo[];
 
-const SKIN_VALIDA = /^[\w:#|.,-]{0,200}$/;
 const INTERVALO_MIN_POSE = 1000 / 30; // ignora quem manda mais de 30 poses por segundo
 
 interface Config {

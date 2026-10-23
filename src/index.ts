@@ -5,12 +5,13 @@
 //   GET   /perfil             → seu perfil (Authorization: Bearer <token>)
 //   PATCH /perfil             → troca apelido e/ou skin (só itens liberados)
 //   GET   /ranking?por=       → nivel | moedas | <jogo> (top 20 + a sua posição)
+//   POST  /loja/comprar       → { item } compra com moedas do jogo e libera o item
 //   POST  /jogar              → código de uma sala pública com vaga (ou nova)
 //   POST  /salas              → código de uma sala privada nova
 //   GET   /sala/:codigo       → WebSocket da sala (?token=)
 
 import { Diretorio, novoCodigo } from './diretorio';
-import { ErroPerfil, atualizarPerfil, criarPerfil, perfilDoToken, ranking, registrarPartida, tokenDaRequisicao } from './perfis';
+import { ErroPerfil, atualizarPerfil, comprarItem, criarPerfil, perfilDoToken, ranking, registrarPartida, tokenDaRequisicao } from './perfis';
 import { CODIGO_SALA, type RespostaSala } from './protocolo';
 import { Sala } from './sala';
 
@@ -64,6 +65,12 @@ async function rotas(req: Request, env: Env, url: URL, origem: string | null): P
     if (!eu) return json({ erro: 'perfil não encontrado' }, origem, 401);
     if (m === 'GET') return json(eu, origem);
     if (m === 'PATCH') return json(await atualizarPerfil(env.DB, eu, await corpo(req)), origem);
+  }
+
+  if (caminho === '/loja/comprar' && m === 'POST') {
+    const eu = await perfilDoToken(env.DB, tokenDaRequisicao(req));
+    if (!eu) return json({ erro: 'perfil não encontrado' }, origem, 401);
+    return json(await comprarItem(env.DB, eu, (await corpo(req)).item), origem);
   }
 
   if ((caminho === '/jogar' || caminho === '/salas') && m === 'POST') {

@@ -1,9 +1,8 @@
 // Perfis no D1: convidado com token secreto, XP e nível, moedas com extrato, itens, conquistas,
 // partidas e ranking por jogo. Moedas e XP só mudam aqui, sempre pelo servidor (o jogo nunca diz "ganhei X").
 
-import { CONQUISTAS, ITENS, type LinhaRanking, MOEDAS_INICIAIS, type Perfil, type RespostaRanking, XP_PRESENCA_DIA, itensBloqueados, nivelDoXp } from './protocolo';
+import { CONQUISTAS, ITENS, type LinhaRanking, MOEDAS_INICIAIS, type Perfil, type RespostaRanking, SKIN_VALIDA, XP_PRESENCA_DIA, itensBloqueados, nivelDoXp } from './protocolo';
 
-const SKIN_VALIDA = /^[\w:#|.,-]{0,200}$/;
 
 export function limparNome(bruto: unknown): string {
   return String(bruto ?? '')
@@ -113,6 +112,22 @@ export async function darXpPresenca(db: D1Database, id: string, minutos: number)
     .bind(dia, Math.floor(minutos), XP_PRESENCA_DIA, id)
     .first<{ xp_presenca_hoje: number }>();
   return r?.xp_presenca_hoje ?? 0;
+}
+
+/** Loja: cobra o preço e libera o item numa transação só (sem saldo ou já tendo o item, nada muda). */
+export async function comprarItem(db: D1Database, p: Perfil, itemId: unknown): Promise<Perfil> {
+  const item = ITENS.find((i) => i.id === itemId && i.preco);
+  if (!item?.preco) throw new ErroPerfil('Item não está à venda.');
+  if (p.itens.includes(item.id)) throw new ErroPerfil('Você já tem esse item.', 409);
+  const agora = Date.now();
+  const [r] = await db.batch<{ moedas: number }>([
+    db.prepare('UPDATE jogadores SET moedas = moedas - ?1 WHERE id = ?2 AND moedas >= ?1 AND NOT EXISTS (SELECT 1 FROM itens WHERE jogador_id = ?2 AND item = ?3) RETURNING moedas').bind(item.preco, p.id, item.id),
+    db.prepare('INSERT INTO itens (jogador_id, item, desbloqueado_em) SELECT ?, ?, ? WHERE changes() > 0').bind(p.id, item.id, agora),
+    db.prepare('INSERT INTO extrato (jogador_id, valor, motivo, data) SELECT ?, ?, ?, ? WHERE changes() > 0').bind(p.id, -item.preco, 'loja:' + item.id, agora),
+  ]);
+  const saldo = r.results[0]?.moedas;
+  if (saldo === undefined) throw new ErroPerfil('Moedas insuficientes: ' + item.nome + ' custa ' + item.preco + '.', 402);
+  return { ...p, moedas: saldo, itens: [...p.itens, item.id] };
 }
 
 /** Cobra ou paga moedas (valor negativo = gasto). Falha sem mexer em nada se o saldo não der. */
