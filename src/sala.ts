@@ -1,11 +1,12 @@
 // Uma sala da praça: até 12 pessoas conectadas por WebSocket, cada uma vira um boneco.
 // O servidor guarda quem está na sala e repassa poses (em lotes, 10 por segundo), emotes e skins.
 // Usa a API de hibernação: sem mensagens, a sala dorme e as conexões continuam abertas.
+// Quem chega já vem identificado pelo Worker (perfil do token no D1), nos cabeçalhos X-Jogador-*.
 
 import { DurableObject } from 'cloudflare:workers';
+import { darXpPresenca, skinPermitida } from './perfis';
 import { EMOTES, ENVIOS_POR_SEGUNDO, type Emote, type InfoSala, type Jogador, LIMITE_MUNDO, MAX_JOGADORES, type MotivoErro, type MsgCliente, type MsgServidor, type Pose } from './protocolo';
 
-const ID_VALIDO = /^[A-Za-z0-9-]{8,40}$/;
 const SKIN_VALIDA = /^[\w:#|.,-]{0,200}$/;
 const INTERVALO_MIN_POSE = 1000 / 30; // ignora quem manda mais de 30 poses por segundo
 
@@ -14,14 +15,13 @@ interface Config {
   publica: boolean;
 }
 
-export function limparNome(bruto: string | null): string {
-  const nome = String(bruto ?? '')
-    .replace(/[\p{C}<>]/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 16);
-  return nome || 'Visitante';
+/** O que fica preso a cada conexão (sobrevive à hibernação). */
+interface Anexo extends Jogador {
+  desde: number; // quando entrou, para o XP de presença
 }
+
+/** O que os outros jogadores veem (sem dados internos). */
+const publico = ({ id, nome, nivel, skin, pose }: Anexo): Jogador => ({ id, nome, nivel, skin, pose });
 
 const limitar = (v: number, min: number, max: number): number => Math.min(max, Math.max(min, v));
 
@@ -37,7 +37,7 @@ export function poseValida(p: unknown): Pose | null {
 
 export class Sala extends DurableObject<Env> {
   private config: Config | null = null;
-  private jogadores = new Map<WebSocket, Jogador>();
+  private jogadores = new Map<WebSocket, Anexo>();
   private mexeram = new Set<WebSocket>();
   private ultimaPose = new WeakMap<WebSocket, number>();
   private envio: ReturnType<typeof setTimeout> | null = null;
@@ -46,7 +46,7 @@ export class Sala extends DurableObject<Env> {
     super(ctx, env);
     // Depois de hibernar, a memória volta vazia: recupera quem está conectado pelos anexos das conexões.
     for (const ws of ctx.getWebSockets()) {
-      const j = ws.deserializeAttachment() as Jogador | null;
+      const j = ws.deserializeAttachment() as Anexo | null;
       if (j) this.jogadores.set(ws, j);
     }
     ctx.blockConcurrencyWhile(async () => {
@@ -76,9 +76,8 @@ export class Sala extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: cliente });
     };
 
-    const id = url.searchParams.get('id') ?? '';
-    const skin = url.searchParams.get('skin') ?? '';
-    if (!ID_VALIDO.test(id) || !SKIN_VALIDA.test(skin)) return recusar('invalida');
+    const id = req.headers.get('X-Jogador-Id') ?? '';
+    if (!id) return recusar('invalida');
 
     // A mesma pessoa abrindo de novo (outra aba, reconexão): a conexão antiga sai.
     for (const [ws, j] of this.jogadores) {
@@ -94,14 +93,21 @@ export class Sala extends DurableObject<Env> {
     }
     if (this.jogadores.size >= MAX_JOGADORES) return recusar('cheia');
 
-    const j: Jogador = { id, nome: limparNome(url.searchParams.get('nome')), skin, pose: [(Math.random() - 0.5) * 6, 0, 8 + Math.random() * 3, Math.PI, 0] };
+    const j: Anexo = {
+      id,
+      nome: decodeURIComponent(req.headers.get('X-Jogador-Nome') ?? 'Visitante'),
+      nivel: Number(req.headers.get('X-Jogador-Nivel')) || 1,
+      skin: decodeURIComponent(req.headers.get('X-Jogador-Skin') ?? ''),
+      pose: [(Math.random() - 0.5) * 6, 0, 8 + Math.random() * 3, Math.PI, 0],
+      desde: Date.now(),
+    };
     this.ctx.acceptWebSocket(servidor);
     servidor.serializeAttachment(j);
     this.jogadores.set(servidor, j);
 
     const sala: InfoSala = { codigo: this.config!.codigo, publica: this.config!.publica, max: MAX_JOGADORES };
-    servidor.send(JSON.stringify({ k: 'bemvindo', eu: id, sala, jogadores: [...this.jogadores.values()] } satisfies MsgServidor));
-    this.paraTodos({ k: 'entrou', j }, servidor);
+    servidor.send(JSON.stringify({ k: 'bemvindo', eu: id, sala, jogadores: [...this.jogadores.values()].map(publico) } satisfies MsgServidor));
+    this.paraTodos({ k: 'entrou', j: publico(j) }, servidor);
     this.avisarDiretorio();
     return new Response(null, { status: 101, webSocket: cliente });
   }
@@ -127,9 +133,15 @@ export class Sala extends DurableObject<Env> {
     } else if (m.k === 'emote' && EMOTES.includes(m.e as Emote)) {
       this.paraTodos({ k: 'emote', id: j.id, e: m.e }, ws);
     } else if (m.k === 'skin' && typeof m.s === 'string' && SKIN_VALIDA.test(m.s)) {
-      j.skin = m.s;
+      // Itens bloqueados por nível/conquista não passam (o banco confere e já salva no perfil).
+      const s = m.s;
+      if (!(await skinPermitida(this.env.DB, j.id, s))) {
+        ws.send(JSON.stringify({ k: 'erro', motivo: 'bloqueado' } satisfies MsgServidor));
+        return;
+      }
+      j.skin = s;
       ws.serializeAttachment(j);
-      this.paraTodos({ k: 'skin', id: j.id, s: m.s }, ws);
+      this.paraTodos({ k: 'skin', id: j.id, s }, ws);
     }
   }
 
@@ -153,6 +165,9 @@ export class Sala extends DurableObject<Env> {
     this.mexeram.delete(ws);
     this.paraTodos({ k: 'saiu', id: j.id });
     this.avisarDiretorio();
+    // XP de presença: 1 por minuto na praça (o limite diário fica no banco).
+    const minutos = (Date.now() - j.desde) / Number(this.env.PRESENCA_MS || 60000);
+    if (minutos >= 1) this.ctx.waitUntil(darXpPresenca(this.env.DB, j.id, minutos).catch((e) => console.error('xp de presença', e)));
   }
 
   /** Junta as poses e manda um lote só (menos mensagens = mais barato e mais leve). */

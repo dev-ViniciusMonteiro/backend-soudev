@@ -6,7 +6,11 @@
   "observability": { "enabled": true },
   "vars": {
     // Sites que podem abrir conexão (separados por vírgula).
-    "ORIGENS": "https://soudev.vercel.app,http://localhost:3000,http://localhost:5173,http://localhost:4173"
+    "ORIGENS": "https://soudev.vercel.app,http://localhost:3000,http://localhost:5173,http://localhost:4173",
+    // Milissegundos de praça por 1 XP de presença (o teste local usa menos).
+    "PRESENCA_MS": "60000",
+    // "1" liga rotas de teste; só no wrangler dev do teste, nunca no publicado.
+    "MODO_TESTE": "0"
   },
   "durable_objects": {
     "bindings": [
@@ -14,5 +18,7 @@
       { "name": "DIRETORIO", "class_name": "Diretorio" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sala", "Diretorio"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sala", "Diretorio"] }],
+  // Banco dos perfis, moedas, itens, conquistas, partidas e ranking. Tabelas em migrations/.
+  "d1_databases": [{ "binding": "DB", "database_name": "soudev-jogos", "database_id": "809a2bf3-30d6-4a8c-95b3-28f5fb16c7ae", "migrations_dir": "migrations" }]
 }

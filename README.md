@@ -10,25 +10,35 @@ Publicado em `https://backend-soudev.backend-soudev.workers.dev`.
 |---|---|
 | `GET /saude` | Responde `{ ok: true }` |
 | `GET /online` | Quantas salas públicas e pessoas online |
+| `POST /perfil` | Cria perfil de convidado `{ apelido, skin }` → `{ token, perfil }` |
+| `GET /perfil` · `PATCH /perfil` | Seu perfil / trocar apelido e skin (`Authorization: Bearer <token>`) |
+| `GET /ranking?por=` | `nivel`, `moedas` ou o nome de um jogo (top 20 + a sua posição) |
 | `POST /jogar` | Código de uma sala pública com vaga (a mais cheia), ou de uma nova |
 | `POST /salas` | Código de uma sala privada nova |
-| `GET /sala/:codigo` | WebSocket da sala (`?id=&nome=&skin=`) |
+| `GET /sala/:codigo` | WebSocket da sala (`?token=`) |
 
 - **Sala** (`src/sala.ts`): um Durable Object por sala, até 12 pessoas. Repassa poses em lotes (10 por segundo), emotes e skins. Usa hibernação: sala parada não gasta.
 - **Diretório** (`src/diretorio.ts`): lista das salas públicas para o "Jogar".
 - **Protocolo** (`src/protocolo.ts`): tipos das mensagens. `npm run protocolo` copia para `soudev/games/praca/src`.
+- **Perfis** (`src/perfis.ts`, banco D1 `soudev-jogos`, tabelas em `migrations/`): convidado com token secreto (só o hash fica no banco), XP e nível, moedas com extrato, itens liberados por nível ou conquista, partidas e ranking por jogo e temporada (estilo Elo). XP de presença: 1 por minuto na praça, até 60 por dia.
 - Só os sites em `ORIGENS` (`wrangler.jsonc`) podem criar salas e conectar.
 
 ## Desenvolvimento
 
 ```bash
 npm install
+npx wrangler d1 migrations apply soudev-jogos --local
+printf "MODO_TESTE=1
+PRESENCA_MS=200
+" > .dev.vars   # rotas de teste e XP acelerado, só local
 npm run dev        # servidor local em http://localhost:8787
 npm run teste      # em outro terminal: simula jogadores contra o servidor local
 npm run typecheck
 ```
 
-Para testar o publicado: `BASE=https://backend-soudev.backend-soudev.workers.dev npm run teste`.
+Para testar o publicado: `BASE=https://backend-soudev.backend-soudev.workers.dev npm run teste` e depois `npm run limpar-teste` (apaga os perfis "Teste ...").
+
+Mudou o banco? Crie `migrations/000N_nome.sql` e rode `npx wrangler d1 migrations apply soudev-jogos --remote` antes do deploy.
 
 ## Deploy
 
