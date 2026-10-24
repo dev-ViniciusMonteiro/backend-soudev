@@ -11,6 +11,7 @@
 //   GET   /sala/:codigo       → WebSocket da sala (?token=)
 //   POST  /sistemas/conta     → contas, equipes e membros dos sistemas de gestão (ver sistemas/rotas.ts)
 //   POST  /sistemas/e/:equipe → sincronizar os dados de uma equipe e as páginas públicas dela
+//   *     /vinicut/...        → a rede social do site (ver vinicut/rotas.ts)
 
 import { Diretorio, novoCodigo } from './diretorio';
 import { ErroPerfil, atualizarPerfil, comprarItem, criarPerfil, perfilDoToken, ranking, registrarPartida, tokenDaRequisicao } from './perfis';
@@ -18,6 +19,7 @@ import { CODIGO_SALA, type RespostaSala } from './protocolo';
 import { Sala } from './sala';
 import { EmpresaSx } from './sistemas/empresa';
 import { rotasSistemas } from './sistemas/rotas';
+import { rotasVinicut } from './vinicut/rotas';
 
 export { Diretorio, EmpresaSx, Sala };
 
@@ -56,6 +58,9 @@ async function rotas(req: Request, env: Env, url: URL, origem: string | null): P
     const eu = await perfilDoToken(env.DB, tokenDaRequisicao(req));
     return json(await ranking(env.DB, url.searchParams.get('por') ?? 'nivel', eu?.id ?? null), origem);
   }
+
+  const vc = await rotasVinicut(req, env, url, origem);
+  if (vc) return vc;
 
   // Daqui para baixo, só o site e o jogo (evita robôs de outros sites criando perfis e salas).
   if (!origem && m !== 'GET') return json({ erro: 'origem não permitida' }, null, 403);
@@ -124,8 +129,8 @@ export default {
         status: 204,
         headers: {
           'Access-Control-Allow-Origin': origem,
-          'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Legenda',
           'Access-Control-Max-Age': '86400',
           Vary: 'Origin',
         },

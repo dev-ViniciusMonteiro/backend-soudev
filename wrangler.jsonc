@@ -14,6 +14,7 @@
     // Multiplica as durações das partidas (o teste local usa 0.05).
     "DURACAO_FATOR": "1"
   },
+  "r2_buckets": [{ "binding": "FOTOS", "bucket_name": "vinicut-fotos" }],
   "durable_objects": {
     "bindings": [
       { "name": "SALA", "class_name": "Sala" },
