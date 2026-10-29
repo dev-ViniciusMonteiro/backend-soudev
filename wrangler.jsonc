@@ -12,7 +12,11 @@
     // "1" liga rotas de teste; só no wrangler dev do teste, nunca no publicado.
     "MODO_TESTE": "0",
     // Multiplica as durações das partidas (o teste local usa 0.05).
-    "DURACAO_FATOR": "1"
+    "DURACAO_FATOR": "1",
+    // Super-admin dos sistemas (/admin-sx). A senha (hash) e a chave de sessão são secrets:
+    // ADMIN_SX_PASS_HASH e ADMIN_SX_SECRET (wrangler secret put).
+    "ADMIN_SX_USER": "vinivn",
+    "ADMIN_SX_HORAS": "12"
   },
   "r2_buckets": [{ "binding": "FOTOS", "bucket_name": "vinicut-fotos" }],
   "durable_objects": {
