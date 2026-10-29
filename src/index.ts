@@ -18,7 +18,6 @@ import { ErroPerfil, atualizarPerfil, comprarItem, criarPerfil, perfilDoToken, r
 import { CODIGO_SALA, type RespostaSala } from './protocolo';
 import { Sala } from './sala';
 import { EmpresaSx } from './sistemas/empresa';
-import { rotasAdminSx } from './sistemas/admin';
 import { rotasSistemas } from './sistemas/rotas';
 import { rotasVinicut } from './vinicut/rotas';
 
@@ -53,10 +52,6 @@ async function rotas(req: Request, env: Env, url: URL, origem: string | null): P
   const m = req.method;
 
   if (caminho === '/saude') return json({ ok: true }, origem);
-
-  // Super-admin dos sistemas (autenticado por token, server-to-server com o painel /admin).
-  const adm = await rotasAdminSx(req, env, caminho);
-  if (adm) return adm;
   if (caminho === '/online' && m === 'GET') return json(await env.DIRETORIO.getByName('global').resumo(), origem);
 
   if (caminho === '/ranking' && m === 'GET') {
